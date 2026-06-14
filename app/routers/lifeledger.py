@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from app.core.hashing import passport_hash as compute_hash
 from app.core.ids import to_uuid
 from app.db.session import get_db
 from app.models import entities as m
@@ -24,14 +25,17 @@ def verify(unit_id: str, db: Session = Depends(get_db)) -> VerifyResult:
         .order_by(desc(m.ConditionPassport.graded_at))
     ).scalars().first()
 
-    local_hash = passport.passport_hash if passport else None
-    # On-chain anchoring lands in step 4 (LifeLedger write); verified compares hashes.
-    on_chain_hash = next((e.passport_hash for e in events if e.passport_hash), None)
-    verified = bool(local_hash and on_chain_hash and local_hash == on_chain_hash)
+    # Tamper-evidence: recompute the hash from the stored passport JSON and
+    # compare it to what was anchored on-chain (mock or real).
+    recomputed = compute_hash(passport.passport) if passport else None
+    anchored = next((e for e in events if e.passport_hash), None)
+    on_chain_hash = anchored.passport_hash if anchored else None
+    tx_hash = anchored.tx_hash if anchored else None
+    verified = bool(recomputed and on_chain_hash and recomputed == on_chain_hash)
 
     return VerifyResult(
         unit_id=unit_id, verified=verified,
-        passport_hash=local_hash, on_chain_hash=on_chain_hash,
+        passport_hash=recomputed, on_chain_hash=on_chain_hash, tx_hash=tx_hash,
         events=[
             LifeLedgerEvent(
                 event_type=e.event_type, tx_hash=e.tx_hash,

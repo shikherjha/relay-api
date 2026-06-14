@@ -9,7 +9,8 @@ from app.core.geo import haversine_km
 from app.core.ids import to_uuid
 from app.db.session import get_db
 from app.models import entities as m
-from app.schemas.rescue import RescueClaimResult, RescueListing
+from app.schemas.rescue import PairMatch, RescueClaimResult, RescueListing
+from app.services.pair_rescue import find_pairs
 from app.services.rescue import claim_guardrails, current_discount
 
 router = APIRouter(prefix="/rescue", tags=["rescue"])
@@ -50,6 +51,14 @@ def rescue_feed(
         out.append(_to_listing(row, unit, distance))
     out.sort(key=lambda r: (r.distance_km if r.distance_km is not None else 1e9))
     return out
+
+
+@router.get("/pair-matches", response_model=list[PairMatch])
+def pair_matches(
+    radius_km: float = Query(default=15.0),
+    db: Session = Depends(get_db),
+) -> list[PairMatch]:
+    return find_pairs(db, radius_km=radius_km)
 
 
 @router.post("/{listing_id}/claim", response_model=RescueClaimResult)

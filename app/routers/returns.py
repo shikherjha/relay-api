@@ -125,5 +125,8 @@ def compute_disposition(
         transfer_count=unit.transfer_count, exchange_available=exchange_available,
     )
     decision = engine.score_disposition(req)
-    record_outcome(db, user_id=return_event.user_id, unit=unit, decision=decision)
+    record_outcome(
+        db, user_id=return_event.user_id, unit=unit, decision=decision,
+        passport_hash=passport_row.passport_hash,
+    )
     return decision

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,10 +34,23 @@ def get_impact(user_id: str = Depends(current_user_id), db: Session = Depends(ge
         select(m.GreenCreditLedger).where(m.GreenCreditLedger.user_id == uid)
     ).scalars().all()
 
+    now = datetime.now(timezone.utc)
+    unlocked = 0.0
+    locked = 0.0
+    for c in credits:
+        unlock_at = c.unlock_at
+        if unlock_at is not None and unlock_at.tzinfo is None:
+            unlock_at = unlock_at.replace(tzinfo=timezone.utc)
+        if unlock_at is None or unlock_at <= now:
+            unlocked += float(c.amount)
+        else:
+            locked += float(c.amount)
+
     return ImpactWallet(
         user_id=user_id,
         total_co2_saved_kg=round(sum(e.co2_saved_kg for e in events), 3),
-        credits_balance=round(sum(float(c.amount) for c in credits), 2),
+        credits_balance=round(unlocked, 2),
+        locked_credits=round(locked, 2),
         events=[
             ImpactEventOut(channel=e.channel, co2_saved_kg=e.co2_saved_kg, created_at=e.created_at)
             for e in events

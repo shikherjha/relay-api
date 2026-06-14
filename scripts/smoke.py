@@ -64,8 +64,10 @@ def main() -> None:
     print(f"disposition [{engine_mode}]:", disp["channel"], "co2", disp["net_co2_saved_kg"], "reasons", disp["reasons"])
 
     impact = client.get("/users/me/impact", headers=H).json()
-    assert impact["total_co2_saved_kg"] > 0 and impact["credits_balance"] > 0, impact
-    print("impact:", impact["total_co2_saved_kg"], "kg /", impact["credits_balance"], "credits")
+    # Credits are keep-based: locked for 14 days, so balance is 0 but locked > 0.
+    assert impact["total_co2_saved_kg"] > 0 and impact["locked_credits"] > 0, impact
+    print("impact:", impact["total_co2_saved_kg"], "kg / locked", impact["locked_credits"],
+          "credits (balance", impact["credits_balance"], ")")
 
     feed = client.get("/rescue/feed", params={"lat": 12.9716, "lng": 77.5946, "radius_km": 10}).json()
     assert len(feed) >= 1 and feed[0]["current_discount_pct"] >= 0.15, feed
@@ -85,8 +87,30 @@ def main() -> None:
     print("ops high-return:", ops[0]["sku"], ops[0]["dominant_reason"], "->", ops[0]["recommendation"])
 
     verify = client.get(f"/lifeledger/{unit_id}/verify").json()
+    assert verify["verified"] is True and verify["tx_hash"], verify
     assert any(e["event_type"] == "GRADED" for e in verify["events"]), verify
-    print("lifeledger events:", [e["event_type"] for e in verify["events"]])
+    print("lifeledger:", "verified" if verify["verified"] else "TAMPERED",
+          "tx", verify["tx_hash"][:14], "events", [e["event_type"] for e in verify["events"]])
+
+    # Pair Rescue: demo (hoodie, wants jeans) ↔ buyer (jeans, wants hoodie).
+    pairs = client.get("/rescue/pair-matches", params={"radius_km": 15}).json()
+    assert len(pairs) >= 1 and pairs[0]["score"] > 0.6, pairs
+    print("pair rescue:", len(pairs), "pair(s); top score", pairs[0]["score"],
+          "dist", pairs[0]["distance_km"], "km")
+
+    # Warranty on the electronics unit.
+    with SessionLocal() as db:
+        hp = db.execute(
+            select(m.ProductUnit).join(m.Product, m.Product.id == m.ProductUnit.product_id)
+            .where(m.Product.category == "headphones")
+        ).scalars().first()
+        hp_id = str(hp.id)
+    warranty = client.get(f"/units/{hp_id}/warranty").json()
+    assert warranty["months_remaining"] == 18, warranty
+    print("warranty:", warranty["months_remaining"], "months")
+
+    signals = client.get("/ops/seller-signals").json()
+    print("seller-signals:", [(s["sku"], s["recommendation"]) for s in signals])
 
     print("\nSMOKE_OK")
 

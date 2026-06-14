@@ -26,3 +26,15 @@ class RescueClaimResult(BaseModel):
     listing: RescueListing
     claimed: bool
     guardrails_applied: list[str] = Field(default_factory=list)
+
+
+class PairMatch(BaseModel):
+    """A↔B circular swap: each user's returned unit satisfies the other's wish."""
+
+    unit_a: str
+    unit_b: str
+    user_a: str | None = None
+    user_b: str | None = None
+    score: float = Field(..., ge=0, le=1)
+    distance_km: float | None = None
+    status: str = "proposed"

@@ -12,6 +12,7 @@ from app.routers import (
     rescue,
     returns,
     users,
+    warranty,
     wishlist,
 )
 
@@ -30,6 +31,7 @@ for module in (
     rescue,
     wishlist,
     p2p,
+    warranty,
     lifeledger,
     ops,
     demo,

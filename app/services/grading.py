@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.clients.ledger_client import get_ledger_client
 from app.clients.ml_client import MLClient
 from app.core.hashing import passport_hash
 from app.models import entities as m
@@ -41,7 +42,11 @@ def grade_and_store(
 
     unit.status = "graded"
     return_event.status = "graded"
-    db.add(m.LifeLedgerEvent(unit_id=unit.id, event_type="GRADED", passport_hash=digest))
+
+    anchor = get_ledger_client().anchor(unit_id=str(unit.id), passport_hash=digest)
+    db.add(m.LifeLedgerEvent(
+        unit_id=unit.id, event_type="GRADED", passport_hash=digest, tx_hash=anchor.tx_hash,
+    ))
 
     db.commit()
     db.refresh(row)

@@ -74,8 +74,9 @@ def seed_all(db: Session) -> dict:
         m.ProductUnit(id=uuid.uuid4(), product_id=P_HOODIE, serial="HD-0001", status="returned",
                       owner_id=DEMO_USER, geo_lat=BLR[0], geo_lng=BLR[1],
                       embedding=emb("hoodie", "fashion", "M")),
-        m.ProductUnit(id=uuid.uuid4(), product_id=P_JEANS, serial="JN-0001", status="in_stock",
-                      geo_lat=BLR[0] + 0.02, geo_lng=BLR[1] + 0.02,
+        # Buyer's returned jeans — satisfies the demo user's jeans wish (Pair Rescue).
+        m.ProductUnit(id=uuid.uuid4(), product_id=P_JEANS, serial="JN-0001", status="returned",
+                      owner_id=BUYER_USER, geo_lat=BLR[0] + 0.02, geo_lng=BLR[1] + 0.02,
                       embedding=emb("jeans", "fashion", "32")),
         m.ProductUnit(id=uuid.uuid4(), product_id=P_HEADPHONES, serial="HP-0001", status="returned",
                       owner_id=DEMO_USER, geo_lat=BLR[0] - 0.05, geo_lng=BLR[1],
@@ -105,6 +106,9 @@ def seed_all(db: Session) -> dict:
     )
     db.add(rescue)
 
+    # Warranty record on the electronics unit (headphones).
+    db.add(m.WarrantyRecord(unit_id=units[2].id, months_remaining=18, repair_events=[]))
+
     # Bracketing cart: 3 distinct sizes of the same tee for the demo user (fires ≥3).
     for size in ("S", "M", "L"):
         db.add(m.CartItem(user_id=DEMO_USER, product_id=P_TSHIRT, sku="FAS-TS-001", size=size, qty=1))
@@ -112,5 +116,5 @@ def seed_all(db: Session) -> dict:
     db.commit()
     return {
         "users": 2, "products": len(products), "units": len(units),
-        "wishes": len(wishes), "rescue_listings": 1, "cart_items": 3,
+        "wishes": len(wishes), "rescue_listings": 1, "cart_items": 3, "warranties": 1,
     }

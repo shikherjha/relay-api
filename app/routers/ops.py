@@ -23,9 +23,12 @@ _REASON_FIX = {
     "defective": "audit supplier QC for this SKU",
 }
 
+# Only emit a catalog-fix recommendation once a SKU crosses these thresholds.
+SELLER_SIGNAL_MIN_RETURNS = 2
+SELLER_SIGNAL_MIN_RATE = 0.25
 
-@router.get("/high-return-skus", response_model=list[HighReturnSku])
-def high_return_skus(db: Session = Depends(get_db)) -> list[HighReturnSku]:
+
+def _aggregate_skus(db: Session) -> list[HighReturnSku]:
     rows = db.execute(
         select(m.Product.sku, m.Product.title, m.ReturnEvent.reason_code)
         .join(m.ProductUnit, m.ProductUnit.id == m.ReturnEvent.unit_id)
@@ -43,12 +46,25 @@ def high_return_skus(db: Session = Depends(get_db)) -> list[HighReturnSku]:
     out: list[HighReturnSku] = []
     for sku, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
         dominant = reasons[sku].most_common(1)[0][0] if reasons[sku] else None
+        rate = min(n / 10.0, 1.0)
+        flagged = n >= SELLER_SIGNAL_MIN_RETURNS or rate >= SELLER_SIGNAL_MIN_RATE
         out.append(HighReturnSku(
-            sku=sku, title=titles.get(sku), return_count=n, return_rate=min(n / 10.0, 1.0),
+            sku=sku, title=titles.get(sku), return_count=n, return_rate=rate,
             dominant_reason=dominant,
-            recommendation=_REASON_FIX.get(dominant) if dominant else None,
+            recommendation=_REASON_FIX.get(dominant) if (flagged and dominant) else None,
         ))
     return out
+
+
+@router.get("/high-return-skus", response_model=list[HighReturnSku])
+def high_return_skus(db: Session = Depends(get_db)) -> list[HighReturnSku]:
+    return _aggregate_skus(db)
+
+
+@router.get("/seller-signals", response_model=list[HighReturnSku])
+def seller_signals(db: Session = Depends(get_db)) -> list[HighReturnSku]:
+    """Only SKUs that crossed the threshold and have an actionable catalog fix."""
+    return [s for s in _aggregate_skus(db) if s.recommendation is not None]
 
 
 @router.get("/rescue-live", response_model=OpsRescueLive)

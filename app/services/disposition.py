@@ -7,16 +7,19 @@ green credits + a LifeLedger event for the chosen channel.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.clients.ledger_client import get_ledger_client
 from app.core.carbon import credits_for_co2
 from app.core.config import settings
 from app.core.geo import geo_decay, haversine_km
 from app.models import entities as m
 from app.schemas.disposition import DemandSignal, DispositionResponse
+
+CREDIT_UNLOCK_DAYS = 14
 
 # Channel -> LifeLedger event_type (only channels that produce a ledger event).
 _CHANNEL_EVENT = {
@@ -63,15 +66,25 @@ def record_outcome(
     user_id,
     unit: m.ProductUnit,
     decision: DispositionResponse,
+    passport_hash: str | None = None,
 ) -> None:
     co2 = decision.net_co2_saved_kg or 0.0
     db.add(m.ImpactEvent(user_id=user_id, unit_id=unit.id, channel=decision.channel, co2_saved_kg=co2))
     credits = credits_for_co2(co2)
     if credits > 0:
+        # Keep-based credits unlock after a 14-day hold (anti-abuse).
         db.add(m.GreenCreditLedger(
             user_id=user_id, amount=credits, reason=f"disposition:{decision.channel}",
+            unlock_at=datetime.now(timezone.utc) + timedelta(days=CREDIT_UNLOCK_DAYS),
         ))
     event_type = _CHANNEL_EVENT.get(decision.channel)
     if event_type:
-        db.add(m.LifeLedgerEvent(unit_id=unit.id, event_type=event_type))
+        tx_hash = None
+        if passport_hash:
+            tx_hash = get_ledger_client().anchor(
+                unit_id=str(unit.id), passport_hash=passport_hash
+            ).tx_hash
+        db.add(m.LifeLedgerEvent(
+            unit_id=unit.id, event_type=event_type, passport_hash=passport_hash, tx_hash=tx_hash,
+        ))
     db.commit()

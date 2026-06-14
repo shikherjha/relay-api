@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     polygon_rpc_url: str = "https://rpc-amoy.polygon.technology"
     lifeledger_private_key: str = ""
+    lifeledger_contract_address: str = ""
+    # Real on-chain anchoring requires a funded Amoy key; mock anchors locally.
+    use_real_ledger: bool = False
 
     embedding_dim: int = 384
     rescue_default_radius_km: float = 3.0

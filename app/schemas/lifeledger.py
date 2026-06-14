@@ -23,4 +23,5 @@ class VerifyResult(BaseModel):
     verified: bool
     passport_hash: str | None = None
     on_chain_hash: str | None = None
+    tx_hash: str | None = None
     events: list[LifeLedgerEvent] = Field(default_factory=list)

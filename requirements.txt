@@ -11,4 +11,6 @@ redis==5.2.1
 httpx==0.28.1
 python-multipart==0.0.20
 boto3==1.35.90
+# Optional: real LifeLedger anchoring on Polygon Amoy (lazy-imported; mock needs none).
+web3==7.6.1
 pytest==8.3.4
