@@ -25,5 +25,6 @@ class ReturnEvent(BaseModel):
 
 class MediaAccepted(BaseModel):
     job_id: str
-    status: Literal["queued"] = "queued"
+    status: Literal["queued", "graded"] = "queued"
+    passport_id: str | None = None
     media_hashes: list[str] = []

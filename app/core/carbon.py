@@ -19,6 +19,13 @@ CO2_SAVED_KG_BY_CHANNEL: dict[str, float] = {
 # kg CO2 per km of last-mile delivery (light vehicle).
 DELIVERY_CO2_PER_KM: float = 0.12
 
+# Green credits awarded per kg CO2 saved (demo economy).
+CREDITS_PER_KG_CO2: float = 10.0
+
+
+def credits_for_co2(co2_saved_kg: float) -> float:
+    return round(max(0.0, co2_saved_kg) * CREDITS_PER_KG_CO2, 2)
+
 
 def net_co2_saved(channel: str, delivery_km: float = 0.0) -> float:
     """Net CO2 saved for a disposition, subtracting last-mile delivery cost."""

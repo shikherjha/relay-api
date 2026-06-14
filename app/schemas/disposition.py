@@ -18,6 +18,7 @@ class DemandSignal(BaseModel):
 
     open_wish_count: int = Field(default=0, ge=0)
     demand_score: float = Field(default=0.0, ge=0, description="Σ wish_score × geo_decay")
+    nearest_km: float | None = Field(default=None, ge=0, description="distance to nearest matching wish")
 
 
 class DispositionRequest(BaseModel):
@@ -27,6 +28,8 @@ class DispositionRequest(BaseModel):
     user_id: str | None = None
     geo: Geo | None = None
     demand: DemandSignal | None = None
+    transfer_count: int = Field(default=0, ge=0)
+    exchange_available: bool = False
 
 
 class DispositionResponse(BaseModel):

@@ -13,3 +13,4 @@ class Error(BaseModel):
 
 class StatusResponse(BaseModel):
     status: str
+    detail: dict | None = None

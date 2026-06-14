@@ -26,39 +26,47 @@ class MockEngineClient:
         return {"status": "ok", "mock": True}
 
     def score_disposition(self, req: DispositionRequest) -> DispositionResponse:
-        passport = req.passport
+        """Parity with relay-engine's rule engine for offline/mock runs."""
+        grade = req.passport.grade_numeric
         reasons: list[str] = []
         guardrails: list[str] = []
 
-        # Chain-depth cap is a hard guardrail (mirrors §7).
-        # transfer_count isn't in the passport; engine reads it from DB in the
-        # real impl. Mock leans on grade + reason only.
-        if req.return_reason in {"too_small", "too_large", "fit"}:
+        delivery_km = 5.0
+        demand_score = 0.0
+        if req.demand:
+            demand_score = req.demand.demand_score
+            if req.demand.nearest_km:
+                delivery_km = req.demand.nearest_km
+
+        if req.transfer_count >= 3:
+            guardrails.append(f"chain_depth_cap({req.transfer_count}>=3)")
+            channel = "recycle" if grade < 0.3 else "donate" if grade < 0.6 else "refurb"
+            reasons.append("transfer cap reached → end-of-cycle channel")
+        elif req.return_reason in {"too_small", "too_large", "fit"} and req.exchange_available:
             channel = "exchange"
-            reasons.append("size/fit reason → exchange-first")
-        elif passport.grade_numeric >= 0.6:
-            if req.demand and req.demand.demand_score > 0:
+            reasons.append("size/fit reason + exchange SKU in stock → exchange-first")
+        elif grade >= 0.6:
+            net_rescue = net_co2_saved("rescue", delivery_km)
+            if demand_score > 0 and net_rescue > 0:
                 channel = "rescue"
                 reasons.append(f"good grade + local demand ({req.demand.open_wish_count} wishes)")
             else:
                 channel = "p2p_resale"
-                reasons.append("good grade, no local demand → p2p")
-        elif passport.grade_numeric >= 0.3:
+                if net_rescue <= 0:
+                    guardrails.append("net_carbon_gate(rescue<=0)")
+                reasons.append("good grade → p2p")
+        elif grade >= 0.3:
             channel = "refurb"
             reasons.append("fair grade → refurb")
         else:
             channel = "donate"
-            reasons.append("low grade → donate/recycle")
+            reasons.append("low grade → donate")
 
-        delivery_km = 0.0
-        if req.geo is not None:
-            delivery_km = 5.0  # placeholder; real engine computes haversine
+        norm = demand_score / (demand_score + 1.0)
+        score = round(min(grade * 0.7 + norm * 0.3, 1.0), 3)
         return DispositionResponse(
-            channel=channel,
-            score=round(min(passport.grade_numeric + 0.1, 1.0), 3),
-            reasons=reasons,
-            guardrails_applied=guardrails,
-            net_co2_saved_kg=net_co2_saved(channel, delivery_km),
+            channel=channel, score=score, reasons=reasons,
+            guardrails_applied=guardrails, net_co2_saved_kg=net_co2_saved(channel, delivery_km),
         )
 
 

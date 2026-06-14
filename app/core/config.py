@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     embedding_dim: int = 384
     rescue_default_radius_km: float = 3.0
+    rescue_discount_base: float = 0.15
+    rescue_discount_max: float = 0.45
+    rescue_user_return_rate_cap: float = 0.4
+    chain_depth_cap: int = 3
 
     model_config = SettingsConfigDict(
         env_file=".env",
