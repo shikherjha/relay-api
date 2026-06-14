@@ -17,6 +17,13 @@ class ImpactEventOut(BaseModel):
     created_at: datetime | None = None
 
 
+class AccessTier(BaseModel):
+    name: str
+    threshold: float
+    early_access_hours: float = 0.0
+    unlocked: bool = False
+
+
 class ImpactWallet(BaseModel):
     user_id: str
     total_co2_saved_kg: float = 0.0
@@ -27,4 +34,9 @@ class ImpactWallet(BaseModel):
     lifetime_credits: float = 0.0
     early_access: bool = False
     early_access_threshold: float = 0.0
+    # Tiered early access: each higher tier sees rescue listings earlier.
+    tier: str = "standard"
+    next_tier: str | None = None
+    credits_to_next_tier: float | None = None
+    tiers: list[AccessTier] = Field(default_factory=list)
     events: list[ImpactEventOut] = Field(default_factory=list)

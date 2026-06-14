@@ -22,6 +22,7 @@ def _to_product(row: m.Product) -> dict:
         "category": row.category,
         "vertical": row.vertical,
         "price": float(row.price),
+        "image_url": row.image_url,
         "metadata": row.product_metadata,
     }
 

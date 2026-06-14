@@ -6,8 +6,16 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 LifeLedgerEventType = Literal[
-    "GRADED", "RESCUED", "P2P_LISTED", "P2P_SOLD",
-    "EXCHANGED", "DONATED", "RECYCLED", "REGRADE_REQUESTED",
+    # first-life (Layer-1) + reverse-logistics lifecycle
+    "PURCHASED", "RETURN_REQUESTED", "PICKED_UP",
+    # grading + trust
+    "GRADED", "REGRADE_REQUESTED",
+    # Path A — hyperlocal intercept
+    "RESCUED",
+    # Path B — warehouse disposition (Certified Second-Life)
+    "REFURBISHED", "RELISTED",
+    # other dispositions
+    "P2P_LISTED", "P2P_SOLD", "EXCHANGED", "DONATED", "RECYCLED",
 ]
 
 

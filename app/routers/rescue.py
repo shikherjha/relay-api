@@ -11,21 +11,23 @@ from app.core.ids import to_uuid
 from app.db.session import get_db
 from app.models import entities as m
 from app.schemas.rescue import PairMatch, RescueClaimResult, RescueListing
+from app.schemas.resale import PriceRange
 from app.services.pair_rescue import find_pairs
 from app.services.rescue import (
     claim_guardrails,
     current_discount,
     early_access_until,
-    has_early_access,
     is_embargoed,
     lifetime_credits,
+    user_lead_seconds,
+    visible_to,
 )
 
 router = APIRouter(prefix="/rescue", tags=["rescue"])
 
 
 def _enrich_listing(db: Session, row: m.RescueListing, unit: m.ProductUnit | None) -> dict:
-    title = category = vertical = reason = grade = None
+    title = category = vertical = reason = grade = image_url = None
     original_price = None
     if unit is not None:
         product = db.get(m.Product, unit.product_id)
@@ -33,6 +35,7 @@ def _enrich_listing(db: Session, row: m.RescueListing, unit: m.ProductUnit | Non
             title = product.title
             category = product.category
             vertical = product.vertical
+            image_url = product.image_url
             original_price = float(product.price)
         ret = db.execute(
             select(m.ReturnEvent)
@@ -52,11 +55,24 @@ def _enrich_listing(db: Session, row: m.RescueListing, unit: m.ProductUnit | Non
         "title": title,
         "category": category,
         "vertical": vertical,
+        "image_url": image_url,
         "original_price": original_price,
         "grade": grade,
         "reason": reason,
         "max_discount_pct": settings.rescue_discount_max,
     }
+
+
+def _price_band(original_price: float | None, current_discount_pct: float, base_discount_pct: float | None) -> tuple[float | None, PriceRange | None]:
+    """list_price = price at the current (decayed) discount; the band runs from
+    the deepest possible discount (max decay) up to the base discount."""
+    if original_price is None:
+        return None, None
+    base = base_discount_pct if base_discount_pct is not None else settings.rescue_discount_base
+    list_price = round(original_price * (1 - current_discount_pct), 2)
+    floor = round(original_price * (1 - settings.rescue_discount_max), 2)  # deepest discount
+    ceiling = round(original_price * (1 - base), 2)  # shallowest (base) discount
+    return list_price, PriceRange(min=min(floor, ceiling), max=max(floor, ceiling))
 
 
 def _to_listing(
@@ -68,6 +84,8 @@ def _to_listing(
 ) -> RescueListing:
     discount = current_discount(row)
     extra = _enrich_listing(db, row, unit)
+    scope = row.scope or "local"
+    list_price, price_range = _price_band(extra["original_price"], discount, row.base_discount_pct)
     return RescueListing(
         id=str(row.id), unit_id=str(row.unit_id),
         discount_pct=discount,
@@ -76,8 +94,14 @@ def _to_listing(
         ttl_seconds=row.ttl_seconds, expires_at=row.expires_at,
         status=row.status, claimed_by=str(row.claimed_by) if row.claimed_by else None,
         distance_km=round(distance_km, 2) if distance_km is not None else None,
+        scope=scope,
+        ships=scope == "national",
+        fulfillment=row.fulfillment or ("shipped" if scope == "national" else "local_pickup"),
+        pickup_anchored=scope == "local" and row.ttl_seconds is not None,
         early_access=early_access,
         early_access_until=early_access_until(row) if early_access else None,
+        list_price=list_price,
+        price_range=price_range,
         **extra,
     )
 
@@ -87,13 +111,14 @@ def rescue_feed(
     lat: float = Query(...),
     lng: float = Query(...),
     radius_km: float = Query(default=15.0),
+    scope: str = Query(default="local", pattern="^(local|national|all)$"),
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
 ) -> list[RescueListing]:
-    # Pillar 5: green credits buy early access. High-credit users see new
-    # listings during the embargo window; everyone else waits for them to go
-    # public. The filter is keyed on the caller's lifetime credit tier.
-    early = has_early_access(lifetime_credits(db, to_uuid(user_id)))
+    # Pillar 5 (tiered): green credits buy early access. The caller's lifetime
+    # credit tier grants a "lead" — how early before a listing goes public it can
+    # be seen. Gold sees from creation, silver later, standard only when public.
+    lead = user_lead_seconds(lifetime_credits(db, to_uuid(user_id)))
 
     rows = db.execute(
         select(m.RescueListing).where(m.RescueListing.status == "active")
@@ -101,17 +126,23 @@ def rescue_feed(
 
     out: list[RescueListing] = []
     for row in rows:
+        row_scope = row.scope or "local"
+        if scope != "all" and row_scope != scope:
+            continue
+        if not visible_to(row, lead):
+            continue  # still embargoed for this tier
         embargoed = is_embargoed(row)
-        if embargoed and not early:
-            continue  # still in its early-access window; public can't see it yet
         unit = db.get(m.ProductUnit, row.unit_id)
         distance = None
-        if unit and unit.geo_lat is not None:
-            distance = haversine_km(lat, lng, unit.geo_lat, unit.geo_lng)
-            if distance > radius_km:
-                continue
+        if row_scope == "local":
+            # Hyperlocal intercept is distance-gated; national (Path B) ships.
+            if unit and unit.geo_lat is not None:
+                distance = haversine_km(lat, lng, unit.geo_lat, unit.geo_lng)
+                if distance > radius_km:
+                    continue
         out.append(_to_listing(db, row, unit, distance, early_access=embargoed))
-    out.sort(key=lambda r: (r.distance_km if r.distance_km is not None else 1e9))
+    # Local (nearest first), then national fallbacks.
+    out.sort(key=lambda r: (r.scope == "national", r.distance_km if r.distance_km is not None else 1e9))
     return out
 
 

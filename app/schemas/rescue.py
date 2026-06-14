@@ -5,7 +5,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.resale import PriceRange
+
 RescueStatus = Literal["active", "claimed", "expired", "cancelled"]
+# Path A = hyperlocal intercept (pickup-anchored TTL, local pickup/courier).
+# Path B = warehouse "Certified Second-Life" relist (national, shipped).
+RescueScope = Literal["local", "national"]
 
 
 class RescueListing(BaseModel):
@@ -20,14 +25,23 @@ class RescueListing(BaseModel):
     status: RescueStatus = "active"
     claimed_by: str | None = None
     distance_km: float | None = None
+    # Two-path disposition: local intercept vs national certified relist.
+    scope: RescueScope = "local"
+    ships: bool = False
+    fulfillment: str | None = None  # "local_pickup" | "courier" | "shipped"
+    pickup_anchored: bool = False
     # Enriched for UI (product + passport context).
     title: str | None = None
     category: str | None = None
     vertical: str | None = None
+    image_url: str | None = None
     original_price: float | None = None
     grade: str | None = None
     reason: str | None = None
     max_discount_pct: float | None = None
+    # Price the buyer actually pays now (decayed) + the band it can move within.
+    list_price: float | None = None
+    price_range: PriceRange | None = None
     # Pillar 5: true when this listing is still inside its early-access embargo
     # window — only high-credit users see it before `early_access_until`.
     early_access: bool = False

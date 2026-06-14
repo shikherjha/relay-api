@@ -11,7 +11,8 @@ from app.core.deps import current_user_id
 from app.core.ids import to_uuid
 from app.db.session import get_db
 from app.models import entities as m
-from app.schemas.users import FitProfile, ImpactEventOut, ImpactWallet
+from app.schemas.users import AccessTier, FitProfile, ImpactEventOut, ImpactWallet
+from app.services.rescue import access_tiers, user_tier
 
 router = APIRouter(prefix="/users/me", tags=["users"])
 
@@ -49,6 +50,20 @@ def get_impact(user_id: str = Depends(current_user_id), db: Session = Depends(ge
 
     lifetime = round(unlocked + locked, 2)
     threshold = settings.rescue_early_access_credit_threshold
+
+    # Tiered early access: which tier the lifetime credits unlock + the next rung.
+    ladder = access_tiers()  # (name, threshold, lead_seconds) ascending
+    tiers = [
+        AccessTier(
+            name=name, threshold=thr,
+            early_access_hours=round(secs / 3600, 2),
+            unlocked=lifetime >= thr,
+        )
+        for name, thr, secs in ladder
+    ]
+    current_tier = user_tier(lifetime)
+    next_tier = next((t for t in tiers if not t.unlocked), None)
+
     return ImpactWallet(
         user_id=user_id,
         total_co2_saved_kg=round(sum(e.co2_saved_kg for e in events), 3),
@@ -57,6 +72,10 @@ def get_impact(user_id: str = Depends(current_user_id), db: Session = Depends(ge
         lifetime_credits=lifetime,
         early_access=lifetime >= threshold,
         early_access_threshold=threshold,
+        tier=current_tier,
+        next_tier=next_tier.name if next_tier else None,
+        credits_to_next_tier=round(next_tier.threshold - lifetime, 2) if next_tier else None,
+        tiers=tiers,
         events=[
             ImpactEventOut(channel=e.channel, co2_saved_kg=e.co2_saved_kg, created_at=e.created_at)
             for e in events

@@ -21,6 +21,8 @@ _REASON_FIX = {
     "too_large": "add a size-down note / update size chart",
     "fit": "update size chart + fit guidance",
     "defective": "audit supplier QC for this SKU",
+    # Fulfillment-accuracy signal: wrong item shipped → pick-pack / SKU mapping.
+    "wrong_item": "audit pick-pack accuracy + SKU-to-bin mapping",
 }
 
 # Only emit a catalog-fix recommendation once a SKU crosses these thresholds.

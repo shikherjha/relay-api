@@ -65,6 +65,7 @@ class Product(Base):
     category: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     vertical: Mapped[str] = mapped_column(String(32), nullable=False)  # fashion | electronics
     price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    image_url: Mapped[str | None] = mapped_column(String(512))
     product_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB)
 
 
@@ -75,6 +76,9 @@ class ProductUnit(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     serial: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), default="in_stock", server_default="in_stock")
+    # Physical size of this unit (mirrors the order line that sold it). Drives
+    # the next-owner size-match gate (matching.py).
+    size: Mapped[str | None] = mapped_column(String(32))
     owner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     transfer_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     geo_lat: Mapped[float | None] = mapped_column(Float)
@@ -82,14 +86,62 @@ class ProductUnit(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMB_DIM))
 
 
+class Order(Base):
+    """A Layer-1 (Amazon) checkout. Source of truth for order history + returns."""
+
+    __tablename__ = "orders"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(32), default="placed", server_default="placed")
+    subtotal: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    placed_at: Mapped[datetime] = _created_at()
+
+
+class OrderItem(Base):
+    """One purchased line, bound to a physical unit so returns act on real goods."""
+
+    __tablename__ = "order_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"))
+    product_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    unit_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("product_units.id", ondelete="SET NULL")
+    )
+    sku: Mapped[str | None] = mapped_column(String(64))
+    size: Mapped[str | None] = mapped_column(String(32))
+    variant: Mapped[str | None] = mapped_column(String(64))
+    qty: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    price: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    status: Mapped[str] = mapped_column(String(32), default="delivered", server_default="delivered")
+    # When the line was delivered → anchors the return-window / resell clock.
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Post-return disposition state for the line: e.g. "return_to_seller"
+    # (wrong_item flagged) or "exchanged". None for normal lines.
+    return_state: Mapped[str | None] = mapped_column(String(32))
+    # Replacement lines created by an exchange point back to the original line.
+    exchanged_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("order_items.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = _created_at()
+
+
 class ReturnEvent(Base):
     __tablename__ = "return_events"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     unit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("product_units.id", ondelete="CASCADE"))
+    # Order-linked returns: bind a return to the exact purchased line item.
+    order_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("order_items.id", ondelete="SET NULL")
+    )
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     reason_code: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="initiated", server_default="initiated")
+    # Pickup-anchored reverse logistics: the rescue TTL clock starts at pickup_at.
+    pickup_slot: Mapped[str | None] = mapped_column(String(64))
+    pickup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -133,6 +185,10 @@ class RescueListing(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
     claimed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # Two-path disposition. Path A (local): pickup-anchored, local pickup/courier.
+    # Path B (national): warehouse Certified Second-Life relist, shipped, no decay.
+    scope: Mapped[str] = mapped_column(String(16), default="local", server_default="local")
+    fulfillment: Mapped[str | None] = mapped_column(String(32))  # local_pickup|courier|shipped
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -158,6 +214,35 @@ class P2PListing(Base):
     price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="listed", server_default="listed")
     escrow_status: Mapped[str] = mapped_column(String(32), default="none", server_default="none")
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ResaleListing(Base):
+    """Track B "Second Life" listing: a buyer re-listing a unit they own
+    (source "p2p") or a seller republishing a refurbished unit (source
+    "certified"). Carries the resale grade + AI-derived price band."""
+
+    __tablename__ = "resale_listings"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    unit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("product_units.id", ondelete="CASCADE"))
+    lister_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    source: Mapped[str] = mapped_column(String(16), default="p2p", server_default="p2p")
+    original_price: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    price_min: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    price_max: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    list_price: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    # Widened to hold ML resale labels ("Like New", "Very Good", …) as well as
+    # the local fallback's letter grade ("B+").
+    resale_grade: Mapped[str | None] = mapped_column(String(32))
+    age_days: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
+    escrow_status: Mapped[str] = mapped_column(String(32), default="none", server_default="none")
+    sold_to: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # Absolute S3 URLs of the reseller-uploaded photos/video (buyer or seller).
+    media_urls: Mapped[list | None] = mapped_column(JSONB)
+    # Human-readable pricing rationale from relay-ml /grade-and-price (when live).
+    pricing_rationale: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
 
 

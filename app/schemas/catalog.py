@@ -14,6 +14,7 @@ class Product(BaseModel):
     category: str
     vertical: Vertical
     price: float
+    image_url: str | None = None
     metadata: dict | None = None
 
 

@@ -23,7 +23,7 @@ def grade_return_task(return_id: str, unit_id: str, image_b64: str, filename: st
         row = grade_and_store(
             db, get_ml_client(),
             return_event=return_event, unit=unit,
-            image=base64.b64decode(image_b64), filename=filename,
+            media=[(filename, base64.b64decode(image_b64))],
         )
         return str(row.id)
     finally:

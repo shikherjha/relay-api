@@ -71,6 +71,10 @@ def record_outcome(
     co2 = decision.net_co2_saved_kg or 0.0
     db.add(m.ImpactEvent(user_id=user_id, unit_id=unit.id, channel=decision.channel, co2_saved_kg=co2))
     credits = credits_for_co2(co2)
+    # Locality bonus: a hyperlocal rescue keeps the carbon win local, so it earns
+    # richer credits than a shipped national disposition.
+    if decision.channel == "rescue":
+        credits = round(credits * settings.credit_locality_multiplier, 2)
     if credits > 0:
         # Keep-based credits unlock after a 14-day hold (anti-abuse).
         db.add(m.GreenCreditLedger(

@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.routers import (
@@ -8,8 +11,10 @@ from app.routers import (
     health,
     lifeledger,
     ops,
+    orders,
     p2p,
     products,
+    resale,
     rescue,
     returns,
     users,
@@ -40,7 +45,9 @@ for module in (
     products,
     users,
     cart,
+    orders,
     returns,
+    resale,
     rescue,
     wishlist,
     p2p,
@@ -50,3 +57,9 @@ for module in (
     demo,
 ):
     app.include_router(module.router)
+
+# Serve seeded product photos so `image_url` (/static/products/<file>) resolves.
+# These are the same images used as return/resell grading inputs.
+_PRODUCT_IMAGES_DIR = Path(__file__).resolve().parents[1] / "seed_assets" / "images"
+_PRODUCT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static/products", StaticFiles(directory=str(_PRODUCT_IMAGES_DIR)), name="product-images")

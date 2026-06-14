@@ -24,6 +24,8 @@ DefectType = Literal[
 ]
 DefectSeverity = Literal["minor", "moderate", "major"]
 FitFlagType = Literal["runs_large", "runs_small", "true_to_size", "critical_fit"]
+# Order-vs-item verification: does the returned item match what was ordered?
+VerificationState = Literal["match", "mismatch", "unknown"]
 
 
 class Defect(BaseModel):
@@ -32,6 +34,21 @@ class Defect(BaseModel):
     bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
     confidence: float | None = Field(default=None, ge=0, le=1)
     description: str | None = Field(default=None, max_length=280)
+
+
+class Verification(BaseModel):
+    """Cheap, prompt-only AI check that the graded item matches the order line.
+
+    Produced additively by relay-ml's grade prompt (no extra image / Bedrock
+    call) from the order's expected_color / product_title. relay-api fills a
+    best-effort fallback when relay-ml omits it. Surfaced on the ConditionPassport
+    AND on the ResaleListing so the buyer sees "color/item verified".
+    """
+
+    color_match: VerificationState = "unknown"
+    item_match: VerificationState = "unknown"
+    observed_color: str | None = None
+    expected_color: str | None = None
 
 
 class ConditionPassport(BaseModel):
@@ -52,6 +69,8 @@ class ConditionPassport(BaseModel):
     model_tier_used: str
     warranty_months_remaining: int = Field(default=0, ge=0)
     repair_events: list[dict] = Field(default_factory=list)
+    # Additive AI order-vs-item verification (optional; None when not assessed).
+    verification: Verification | None = None
 
 
 class FitFlag(BaseModel):
