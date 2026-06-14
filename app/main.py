@@ -1,7 +1,19 @@
 from fastapi import FastAPI
 
 from app.core.config import settings
-from app.routers import health
+from app.routers import (
+    cart,
+    demo,
+    health,
+    lifeledger,
+    ops,
+    p2p,
+    products,
+    rescue,
+    returns,
+    users,
+    wishlist,
+)
 
 app = FastAPI(
     title=settings.app_name,
@@ -9,4 +21,17 @@ app = FastAPI(
     description="Relay BFF — returns, disposition orchestration, matching, credits.",
 )
 
-app.include_router(health.router)
+for module in (
+    health,
+    products,
+    users,
+    cart,
+    returns,
+    rescue,
+    wishlist,
+    p2p,
+    lifeledger,
+    ops,
+    demo,
+):
+    app.include_router(module.router)

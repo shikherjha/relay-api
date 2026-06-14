@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     ml_service_url: str = "http://localhost:8001"
     engine_service_url: str = "http://localhost:8002"
 
+    # Swap to real services once they're live (mock unblocks parallel work).
+    use_mock_ml: bool = True
+    use_mock_engine: bool = True
+    http_timeout_seconds: float = 10.0
+
     s3_bucket: str = "relay-media"
     aws_region: str = "ap-south-1"
 
