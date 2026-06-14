@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import current_user_id
 from app.core.ids import to_uuid
 from app.db.session import get_db
@@ -46,11 +47,16 @@ def get_impact(user_id: str = Depends(current_user_id), db: Session = Depends(ge
         else:
             locked += float(c.amount)
 
+    lifetime = round(unlocked + locked, 2)
+    threshold = settings.rescue_early_access_credit_threshold
     return ImpactWallet(
         user_id=user_id,
         total_co2_saved_kg=round(sum(e.co2_saved_kg for e in events), 3),
         credits_balance=round(unlocked, 2),
         locked_credits=round(locked, 2),
+        lifetime_credits=lifetime,
+        early_access=lifetime >= threshold,
+        early_access_threshold=threshold,
         events=[
             ImpactEventOut(channel=e.channel, co2_saved_kg=e.co2_saved_kg, created_at=e.created_at)
             for e in events

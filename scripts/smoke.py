@@ -11,7 +11,7 @@ from app.core.deps import DEMO_USER_ID
 from app.db.session import SessionLocal
 from app.main import app
 from app.models import entities as m
-from app.services.seed import BUYER_USER
+from app.services.seed import BUYER_USER, HERO_HOODIE_UNIT_ID
 
 client = TestClient(app)
 H = {"X-User-Id": DEMO_USER_ID}
@@ -24,9 +24,9 @@ def main() -> None:
     print("seed:", r.json()["detail"])
 
     products = client.get("/products").json()
-    assert len(products) == 4, products
+    assert len(products) == 14, len(products)
     fashion = client.get("/products", params={"vertical": "fashion"}).json()
-    assert all(p["vertical"] == "fashion" for p in fashion) and len(fashion) == 3
+    assert all(p["vertical"] == "fashion" for p in fashion) and len(fashion) == 9, len(fashion)
 
     pdp = client.get(f"/products/{products[0]['id']}").json()
     assert pdp["fit_flags"] is not None, pdp
@@ -35,13 +35,8 @@ def main() -> None:
     assert cart["bracketing"] and cart["bracketing"][0]["distinct_variants"] == 3, cart
     print("bracketing:", cart["bracketing"][0]["message"])
 
-    # Grab a returned hoodie unit directly from the DB.
-    with SessionLocal() as db:
-        unit = db.execute(
-            select(m.ProductUnit).join(m.Product, m.Product.id == m.ProductUnit.product_id)
-            .where(m.Product.category == "hoodie")
-        ).scalars().first()
-        unit_id = str(unit.id)
+    # Hero hoodie unit — fixed seed ID for reproducible demo deep-links.
+    unit_id = HERO_HOODIE_UNIT_ID
 
     ret = client.post("/returns", headers=H, json={"unit_id": unit_id, "reason_code": "changed_mind"})
     assert ret.status_code == 201, ret.text
@@ -69,10 +64,24 @@ def main() -> None:
     print("impact:", impact["total_co2_saved_kg"], "kg / locked", impact["locked_credits"],
           "credits (balance", impact["credits_balance"], ")")
 
-    feed = client.get("/rescue/feed", params={"lat": 12.9716, "lng": 77.5946, "radius_km": 10}).json()
-    assert len(feed) >= 1 and feed[0]["current_discount_pct"] >= 0.15, feed
-    print("rescue feed:", len(feed), "listing(s); nearest", feed[0]["distance_km"],
-          "km; decay discount", feed[0]["current_discount_pct"])
+    geo = {"lat": 12.9716, "lng": 77.5946, "radius_km": 10}
+    feed = client.get("/rescue/feed", params=geo, headers=H).json()
+    assert len(feed) >= 5 and feed[0]["current_discount_pct"] >= 0.12, feed
+    assert feed[0].get("title"), feed[0]
+    print("rescue feed [demo · high-credit]:", len(feed), "listing(s); nearest", feed[0]["distance_km"],
+          "km;", feed[0]["title"])
+
+    # Pillar 5: fresh listings are inside their early-access window. Early-access
+    # tiers see them flagged; a zero-credit shopper can't see them at all.
+    embargoed_ids = {item["id"] for item in feed if item["early_access"]}
+    assert embargoed_ids, feed
+    print(f"early-access: demo (high-credit) sees {len(embargoed_ids)} embargoed listing(s)")
+
+    nocred = {"X-User-Id": "00000000-0000-0000-0000-0000000000ff"}
+    nocred_feed = client.get("/rescue/feed", params=geo, headers=nocred).json()
+    assert all(item["id"] not in embargoed_ids for item in nocred_feed), nocred_feed
+    assert len(nocred_feed) < len(feed), (len(nocred_feed), len(feed))
+    print(f"gating: zero-credit shopper sees {len(nocred_feed)} public listing(s); embargoed hidden")
 
     # pgvector cosine matching: buyer's hoodie wish should match the returned hoodie unit.
     matches = client.get("/wishlist/matches", headers=BUYER_H).json()
@@ -110,6 +119,7 @@ def main() -> None:
     print("warranty:", warranty["months_remaining"], "months")
 
     signals = client.get("/ops/seller-signals").json()
+    assert len(signals) >= 1 and signals[0]["recommendation"], signals
     print("seller-signals:", [(s["sku"], s["recommendation"]) for s in signals])
 
     print("\nSMOKE_OK")

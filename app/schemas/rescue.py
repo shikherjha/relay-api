@@ -20,6 +20,18 @@ class RescueListing(BaseModel):
     status: RescueStatus = "active"
     claimed_by: str | None = None
     distance_km: float | None = None
+    # Enriched for UI (product + passport context).
+    title: str | None = None
+    category: str | None = None
+    vertical: str | None = None
+    original_price: float | None = None
+    grade: str | None = None
+    reason: str | None = None
+    max_discount_pct: float | None = None
+    # Pillar 5: true when this listing is still inside its early-access embargo
+    # window — only high-credit users see it before `early_access_until`.
+    early_access: bool = False
+    early_access_until: datetime | None = None
 
 
 class RescueClaimResult(BaseModel):

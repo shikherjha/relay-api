@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Relay API"
     app_version: str = "0.1.0"
-    port: int = 8000
+    port: int = 8010
 
     database_url: str = "postgresql://relay:relay@localhost:5432/relay"
     redis_url: str = "redis://localhost:6379/0"
@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     rescue_discount_max: float = 0.45
     rescue_user_return_rate_cap: float = 0.4
     chain_depth_cap: int = 3
+
+    # Pillar 5 — green credits buy ACCESS, not discounts. High-credit users see
+    # new rescue listings during an embargo window before they go public.
+    rescue_early_access_window_seconds: int = 600  # 10-minute head start
+    rescue_early_access_credit_threshold: float = 100.0
 
     model_config = SettingsConfigDict(
         env_file=".env",
