@@ -38,6 +38,8 @@ class RescueListing(BaseModel):
     original_price: float | None = None
     grade: str | None = None
     reason: str | None = None
+    # When the unit was most recently returned — drives "newest return on top".
+    returned_at: datetime | None = None
     max_discount_pct: float | None = None
     # Price the buyer actually pays now (decayed) + the band it can move within.
     list_price: float | None = None

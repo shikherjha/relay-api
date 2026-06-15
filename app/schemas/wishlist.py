@@ -34,6 +34,8 @@ class WishMatch(BaseModel):
     title: str | None = None
     category: str | None = None
     vertical: str | None = None
+    # Real catalogue image (S3) for the match card.
+    image_url: str | None = None
     # The candidate unit's size — only matches that clear the size gate surface.
     size: str | None = None
     grade: str | None = None

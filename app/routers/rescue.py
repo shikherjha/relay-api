@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,10 +27,27 @@ from app.services.rescue import (
 
 router = APIRouter(prefix="/rescue", tags=["rescue"])
 
+RESCUE_CHANNEL = "rescue"
+
+
+def _award_rescue_credits(db: Session, *, user_id, unit_id) -> None:
+    """Green credits (immediately spendable) + impact event for a rescue claim."""
+    from app.core.carbon import credits_for_co2, net_co2_saved
+
+    co2 = net_co2_saved(RESCUE_CHANNEL)
+    db.add(m.ImpactEvent(user_id=user_id, unit_id=unit_id, channel=RESCUE_CHANNEL, co2_saved_kg=co2))
+    credits = credits_for_co2(co2)
+    if credits > 0:
+        db.add(m.GreenCreditLedger(
+            user_id=user_id, amount=credits, reason=f"rescue_claim:{RESCUE_CHANNEL}",
+            unlock_at=None,  # immediately spendable
+        ))
+
 
 def _enrich_listing(db: Session, row: m.RescueListing, unit: m.ProductUnit | None) -> dict:
     title = category = vertical = reason = grade = image_url = None
     original_price = None
+    returned_at = None
     if unit is not None:
         product = db.get(m.Product, unit.product_id)
         if product is not None:
@@ -44,6 +63,7 @@ def _enrich_listing(db: Session, row: m.RescueListing, unit: m.ProductUnit | Non
         ).scalars().first()
         if ret is not None:
             reason = ret.reason_code.replace("_", " ")
+            returned_at = ret.created_at
         passport = db.execute(
             select(m.ConditionPassport)
             .where(m.ConditionPassport.unit_id == unit.id)
@@ -59,6 +79,7 @@ def _enrich_listing(db: Session, row: m.RescueListing, unit: m.ProductUnit | Non
         "original_price": original_price,
         "grade": grade,
         "reason": reason,
+        "returned_at": returned_at,
         "max_discount_pct": settings.rescue_discount_max,
     }
 
@@ -141,8 +162,19 @@ def rescue_feed(
                 if distance > radius_km:
                     continue
         out.append(_to_listing(db, row, unit, distance, early_access=embargoed))
-    # Local (nearest first), then national fallbacks.
-    out.sort(key=lambda r: (r.scope == "national", r.distance_km if r.distance_km is not None else 1e9))
+    # Most-recently-returned first across all scopes — a just-returned unit (e.g.
+    # the MacBook) lands on top whether it's a local pickup or a national relist.
+    # `returned_at` is the true return time; listings with no return context sort
+    # last (epoch).
+    _epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    def _returned_key(r: RescueListing) -> float:
+        ra = r.returned_at
+        if ra is None:
+            return _epoch.timestamp()
+        return (ra if ra.tzinfo is not None else ra.replace(tzinfo=timezone.utc)).timestamp()
+
+    out.sort(key=_returned_key, reverse=True)
     return out
 
 
@@ -173,6 +205,9 @@ def claim_rescue(
     row.claimed_by = to_uuid(user_id)
     row.current_discount_pct = current_discount(row)
     db.add(m.LifeLedgerEvent(unit_id=row.unit_id, event_type="RESCUED"))
+    # Rescuing keeps a unit in the loop → reward the rescuer with green credits
+    # (immediately spendable) + an impact event, so the wallet reflects it now.
+    _award_rescue_credits(db, user_id=to_uuid(user_id), unit_id=row.unit_id)
     db.commit()
     db.refresh(row)
     return RescueClaimResult(listing=_to_listing(db, row, db.get(m.ProductUnit, row.unit_id), None), claimed=True, guardrails_applied=[])

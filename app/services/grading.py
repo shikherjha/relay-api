@@ -7,14 +7,37 @@ swappable client (mock until Bhavya's /grade-image is live).
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
 from app.clients.ledger_client import get_ledger_client
-from app.clients.ml_client import MLClient
+from app.clients.ml_client import MLClient, MockMLClient
 from app.core.config import settings
 from app.core.hashing import passport_hash
 from app.models import entities as m
 from app.schemas.ml import ConditionPassport, EmbedRequest, Verification
+
+logger = logging.getLogger(__name__)
+
+
+def _grade_media(
+    ml: MLClient,
+    *,
+    is_video: bool,
+    media: list[tuple[str, bytes]],
+    unit_id: str,
+    category: str,
+    ev: dict,
+) -> ConditionPassport:
+    """Dispatch to the right grading endpoint (video / multi-angle / single)."""
+    if is_video:
+        name, blob = media[0]
+        return ml.grade_video(video=blob, filename=name, unit_id=unit_id, category=category, **ev)
+    if len(media) > 1:
+        return ml.grade_images(images=media, unit_id=unit_id, category=category, **ev)
+    name, blob = media[0]
+    return ml.grade_image(image=blob, filename=name, unit_id=unit_id, category=category, **ev)
 
 
 def is_size_reason(reason: str | None) -> bool:
@@ -88,14 +111,22 @@ def grade_and_store(
         raise ValueError("no media to grade")
 
     ev = dict(expected_size=expected_size, expected_color=expected_color, product_title=product_title)
-    if is_video:
-        name, blob = media[0]
-        passport = ml.grade_video(video=blob, filename=name, unit_id=str(unit.id), category=category, **ev)
-    elif len(media) > 1:
-        passport = ml.grade_images(images=media, unit_id=str(unit.id), category=category, **ev)
-    else:
-        name, blob = media[0]
-        passport = ml.grade_image(image=blob, filename=name, unit_id=str(unit.id), category=category, **ev)
+    # Safety net (mirrors the resale grade-and-price path): if relay-ml is down,
+    # mis-configured, or Bedrock errors/times out, fall back to a deterministic
+    # local grade so a return never 500s on the synchronous media upload.
+    try:
+        passport = _grade_media(
+            ml, is_video=is_video, media=media, unit_id=str(unit.id), category=category, ev=ev,
+        )
+    except Exception:  # noqa: BLE001 - any ML/transport failure → local fallback
+        logger.warning(
+            "ML grading failed for return %s; falling back to deterministic local grade",
+            return_event.id, exc_info=True,
+        )
+        passport = _grade_media(
+            MockMLClient(), is_video=is_video, media=media,
+            unit_id=str(unit.id), category=category, ev=ev,
+        )
     passport.return_id = str(return_event.id)
 
     # Order-vs-item verification (relay-api fallback if relay-ml omitted it) +

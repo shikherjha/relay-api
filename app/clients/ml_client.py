@@ -177,6 +177,10 @@ class MLClient(Protocol):
     def fit_flags(self, sku_id: str, brand: str | None, category: str | None) -> FitFlagsResponse: ...
     def embed(self, req: EmbedRequest) -> EmbedResponse: ...
     def wish_score(self, req: WishScoreRequest) -> WishScoreResponse: ...
+    def match_rank(
+        self, *, wish: str, size: str | None, max_price: float | None,
+        candidates: list[dict],
+    ) -> dict[str, float]: ...
 
 
 class MockMLClient:
@@ -284,6 +288,22 @@ class MockMLClient:
         score = 0.45 * recency + 0.25 * min(req.user_purchase_count / 5.0, 1.0) \
             + 0.2 * req.category_affinity + 0.1 * (1.0 if req.has_fit_profile else 0.0)
         return WishScoreResponse(score=round(min(score, 1.0), 3), model="mock-logreg")
+
+    def match_rank(
+        self, *, wish: str, size: str | None, max_price: float | None,
+        candidates: list[dict],
+    ) -> dict[str, float]:
+        # Deterministic category-aligned relevance (the demo-safe stand-in for
+        # the Bedrock reranker): a "macbook" wish scores a laptop ~1.0 and
+        # earphones ~0.25, a tee ~0.0 — no cross-category noise.
+        from app.core.taxonomy import category_relevance
+
+        return {
+            c["unit_id"]: round(
+                category_relevance(wish, c.get("category"), c.get("title")), 4
+            )
+            for c in candidates
+        }
 
 
 class HTTPMLClient:
@@ -412,13 +432,24 @@ class HTTPMLClient:
             # Endpoint missing / erroring / unparseable → real-or-mock grade + local price.
             pass
 
-        passport = self._grade_media(
-            media, unit_id=unit_id, category=category, is_video=is_video,
-            expected_size=expected_size, expected_color=expected_color, product_title=product_title,
-        )
-        return assessment_from_passport(
-            passport, original_price=original_price, age_days=age_days, source="fallback",
-        )
+        # Fallback A: real per-endpoint grade (Bedrock) + deterministic local price.
+        try:
+            passport = self._grade_media(
+                media, unit_id=unit_id, category=category, is_video=is_video,
+                expected_size=expected_size, expected_color=expected_color, product_title=product_title,
+            )
+            return assessment_from_passport(
+                passport, original_price=original_price, age_days=age_days, source="fallback",
+            )
+        except Exception:
+            # Fallback B: relay-ml is fully unreachable → deterministic mock grade +
+            # local price, so a resell/relist never 500s on an ML/transport fault.
+            return MockMLClient().grade_and_price(
+                media, unit_id=unit_id, category=category,
+                original_price=original_price, age_days=age_days, vertical=vertical,
+                is_video=is_video, expected_size=expected_size,
+                expected_color=expected_color, product_title=product_title,
+            )
 
     def fit_flags(self, sku_id: str, brand: str | None, category: str | None) -> FitFlagsResponse:
         with self._client() as c:
@@ -437,6 +468,19 @@ class HTTPMLClient:
             resp = c.post("/wish-score", json=req.model_dump())
             resp.raise_for_status()
             return WishScoreResponse.model_validate(resp.json())
+
+    def match_rank(
+        self, *, wish: str, size: str | None, max_price: float | None,
+        candidates: list[dict],
+    ) -> dict[str, float]:
+        """Bedrock LLM rerank (relay-ml /match-rank). Raises on any failure so the
+        caller can fall back to deterministic category alignment."""
+        payload = {"wish": wish, "size": size, "max_price": max_price, "candidates": candidates}
+        with self._client(self._grade_timeout) as c:
+            resp = c.post("/match-rank", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        return {r["unit_id"]: float(r.get("score", 0.0)) for r in data.get("ranked", [])}
 
 
 def get_ml_client() -> MLClient:

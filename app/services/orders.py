@@ -154,15 +154,24 @@ def _latest_passport_hash(db: Session, unit_id) -> str | None:
     return row[0] if row else None
 
 
-def _award_resale_impact(db: Session, user_id, unit_id, channel: str) -> None:
-    """Impact + green credits for a resale acquisition (mirrors resale.buy_listing)."""
+def _award_resale_impact(
+    db: Session, user_id, unit_id, channel: str, *, lock_days: int = CREDIT_UNLOCK_DAYS
+) -> None:
+    """Impact + green credits for a resale acquisition (mirrors resale.buy_listing).
+
+    `lock_days=0` makes the credits immediately spendable — used for a rescue
+    claim so the reward visibly lands in the wallet the moment you rescue.
+    """
     co2 = net_co2_saved(channel)
     db.add(m.ImpactEvent(user_id=user_id, unit_id=unit_id, channel=channel, co2_saved_kg=co2))
     credits = credits_for_co2(co2)
     if credits > 0:
+        unlock_at = (
+            datetime.now(timezone.utc) + timedelta(days=lock_days) if lock_days > 0 else None
+        )
         db.add(m.GreenCreditLedger(
             user_id=user_id, amount=credits, reason=f"relay_checkout:{channel}",
-            unlock_at=datetime.now(timezone.utc) + timedelta(days=CREDIT_UNLOCK_DAYS),
+            unlock_at=unlock_at,
         ))
 
 
@@ -250,7 +259,7 @@ def relay_checkout(
             db.add(m.LifeLedgerEvent(
                 unit_id=unit.id, event_type="RESCUED", passport_hash=digest, tx_hash=anchor.tx_hash,
             ))
-            _award_resale_impact(db, user_id, unit.id, "rescue")
+            _award_resale_impact(db, user_id, unit.id, "rescue", lock_days=0)
             purchased.append({
                 "product_id": unit.product_id, "unit_id": unit.id, "price": price, "size": unit.size,
             })
