@@ -13,6 +13,7 @@ from app.schemas.orders import (
     ExchangeResult,
     Order,
     OrderItemReturnRequest,
+    RelayCheckoutRequest,
 )
 from app.schemas.returns import ReturnEvent
 from app.services.order_actions import (
@@ -20,7 +21,12 @@ from app.services.order_actions import (
     exchange_order_item,
     record_order_item_return,
 )
-from app.services.orders import list_orders, order_to_schema, place_order
+from app.services.orders import (
+    list_orders,
+    order_to_schema,
+    place_order,
+    relay_checkout,
+)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -36,6 +42,24 @@ def checkout(
         order = place_order(
             db, user_id=to_uuid(user_id, what="user id"),
             items=payload.items, geo=payload.geo, clear_cart=payload.clear_cart,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return order_to_schema(db, order)
+
+
+@router.post("/relay-checkout", response_model=Order, status_code=201)
+def relay_cart_checkout(
+    payload: RelayCheckoutRequest,
+    user_id: str = Depends(current_user_id),
+    db: Session = Depends(get_db),
+) -> Order:
+    """Mock checkout for the Relay cart — buys the selected Second-Life listings
+    and claims the selected Rescue listings, then records a single Relay order."""
+    try:
+        order = relay_checkout(
+            db, user_id=to_uuid(user_id, what="user id"),
+            items=payload.items, geo=payload.geo,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

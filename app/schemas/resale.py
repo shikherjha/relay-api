@@ -49,6 +49,9 @@ class ResaleListing(BaseModel):
     unit_id: str
     source: ResaleSource
     title: str | None = None
+    # Catalogue brand (product_metadata.brand) — a little provenance detail for
+    # the buyer's Second Life card.
+    brand: str | None = None
     category: str | None = None
     vertical: str | None = None
     # Catalogue image (absolute S3 URL): derived from the unit's product/order.

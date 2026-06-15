@@ -293,11 +293,15 @@ def resale_to_schema(db: Session, row: m.ResaleListing) -> ResaleListingSchema:
     original = float(row.original_price) if row.original_price is not None else (
         float(product.price) if product is not None else None
     )
+    brand = None
+    if product is not None and isinstance(product.product_metadata, dict):
+        brand = product.product_metadata.get("brand")
     return ResaleListingSchema(
         id=str(row.id),
         unit_id=str(row.unit_id),
         source=row.source,
         title=product.title if product else None,
+        brand=brand,
         category=product.category if product else None,
         vertical=product.vertical if product else None,
         image_url=product.image_url if product else None,

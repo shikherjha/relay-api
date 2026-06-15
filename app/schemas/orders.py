@@ -9,6 +9,7 @@ truth). The return wizard reads returnable order lines from here.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -67,9 +68,27 @@ class Order(BaseModel):
     id: str
     user_id: str
     status: str = "placed"
+    # "amazon" = Layer-1 new-product checkout; "relay" = a Second-Life / Rescue
+    # checkout (resale items bought through the Relay cart).
+    source: str = "amazon"
     subtotal: float | None = None
     placed_at: datetime | None = None
     items: list[OrderItem] = Field(default_factory=list)
+
+
+class RelayCheckoutItem(BaseModel):
+    """One line in a Relay (resale) checkout — a Second-Life listing or a Rescue
+    listing, referenced by its id."""
+
+    kind: Literal["second_life", "rescue"]
+    listing_id: str
+
+
+class RelayCheckoutRequest(BaseModel):
+    """Buy a bag of Second-Life + Rescue listings in one mock checkout."""
+
+    items: list[RelayCheckoutItem] = Field(default_factory=list)
+    geo: Geo | None = None
 
 
 class OrderItemReturnRequest(BaseModel):

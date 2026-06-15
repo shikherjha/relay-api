@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from app.clients.ledger_client import explorer_tx_url
+from app.core.config import settings
 from app.core.hashing import passport_hash as compute_hash
 from app.core.ids import to_uuid
 from app.db.session import get_db
@@ -51,13 +53,18 @@ def verify(unit_id: str, db: Session = Depends(get_db)) -> VerifyResult:
     seen: set[str] = set()
     media_urls = [u for u in media if u and not (u in seen or seen.add(u))]
 
+    top_explorer = explorer_tx_url(tx_hash)
     return VerifyResult(
         unit_id=unit_id, verified=verified,
         passport_hash=recomputed, on_chain_hash=on_chain_hash, tx_hash=tx_hash,
+        on_chain=top_explorer is not None,
+        network=settings.lifeledger_network if settings.use_real_ledger else None,
+        explorer_url=top_explorer,
         events=[
             LifeLedgerEvent(
                 event_type=e.event_type, tx_hash=e.tx_hash,
                 passport_hash=e.passport_hash, created_at=e.created_at,
+                explorer_url=explorer_tx_url(e.tx_hash),
             )
             for e in events
         ],

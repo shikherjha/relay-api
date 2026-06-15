@@ -51,6 +51,22 @@ def _id(suffix: str) -> uuid.UUID:
     return uuid.UUID(f"00000000-0000-0000-0000-0000000000{suffix}")
 
 
+# Namespace for the deeper "x###" depth catalogue (free-form suffixes). uuid5
+# keeps ids deterministic across reseeds (stable deep-links + idempotent S3).
+_PID_NS = uuid.UUID("00000000-0000-0000-0000-0000000000ff")
+
+
+def _is_two_hex(s: str) -> bool:
+    """True for the curated 2-hex suffixes (a1..ae) used by the demo flows."""
+    return len(s) == 2 and all(c in "0123456789abcdef" for c in s.lower())
+
+
+def _pid(suffix: str) -> uuid.UUID:
+    """Product id from a manifest suffix — stable for curated heroes, derived
+    (deterministic uuid5) for the free-form depth catalogue."""
+    return _id(suffix) if _is_two_hex(suffix) else uuid.uuid5(_PID_NS, suffix)
+
+
 # Hero units — stable deep-links for UI + smoke.
 U_HOODIE = _id("b1")
 U_JEANS = _id("b2")
@@ -241,13 +257,14 @@ def seed_all(db: Session) -> dict:
         if image_url and image_url.startswith("http"):
             s3_product_uploads += 1
         p = m.Product(
-            id=_id(suffix), sku=entry["sku"], title=entry["title"],
+            id=_pid(suffix), sku=entry["sku"], title=entry["title"],
             category=entry["category"], vertical=entry["vertical"],
             price=entry["original_price"], image_url=image_url,
             product_metadata={
                 "brand": entry.get("brand"),
                 "product_url": entry.get("product_url"),
                 "sizes": entry.get("sizes") or [],
+                "description": entry.get("description"),
             },
         )
         products[suffix] = p
@@ -744,6 +761,124 @@ def seed_all(db: Session) -> dict:
         ))
         national_listings += 1
 
+    # ── Catalogue depth: distribute the EXTRA products (free-form "x###"
+    #    suffixes from the real-product manifest) across order history, returns,
+    #    Second Life, Rescue (with TTLs) + in-stock so the demo feels populated.
+    #    Deterministic by index so reseeds are stable. The curated demonstrative
+    #    flows above are untouched (smoke/PRD demos still hold).
+    GRADES = [("A+", 0.95), ("A", 0.90), ("B+", 0.80), ("B", 0.72), ("C", 0.55)]
+    depth = {"order_history": 0, "returns": 0, "second_life": 0, "rescue": 0, "in_stock": 0}
+    depth_orders: dict[tuple, m.Order] = {}
+
+    def _depth_order(user, days_ago):
+        key = (str(user), days_ago)
+        o = depth_orders.get(key)
+        if o is None:
+            o = make_order(user, days_ago)
+            depth_orders[key] = o
+        return o
+
+    def _depth_resale(prod, suf, source, who, grade, gnum, age_days):
+        lister = owner[who]
+        u = m.ProductUnit(
+            product_id=prod.id, serial=f"SLX-{suf.upper()}",
+            status="refurbished" if source == "certified" else "listed",
+            owner_id=lister, geo_lat=BLR[0] + 0.004, geo_lng=BLR[1] - 0.004,
+            transfer_count=1 if source == "certified" else 0,
+            embedding=emb(prod.category, prod.vertical, None),
+        )
+        db.add(u)
+        db.flush()
+        db.add(m.LifeLedgerEvent(unit_id=u.id, event_type="PURCHASED",
+                                 tx_hash=f"0xpu{str(u.id)[-6:]}",
+                                 created_at=now - timedelta(days=age_days)))
+        grade_unit(u, prod, grade, gnum, now - timedelta(days=max(1, age_days - 10)),
+                   hint="refurb" if source == "certified" else "p2p_resale")
+        if source == "certified":
+            db.add_all([
+                m.LifeLedgerEvent(unit_id=u.id, event_type="REFURBISHED",
+                                  created_at=now - timedelta(days=max(1, age_days - 12))),
+                m.LifeLedgerEvent(unit_id=u.id, event_type="RELISTED",
+                                  created_at=now - timedelta(days=max(1, age_days - 13))),
+            ])
+        price_range, list_price = compute_resale_pricing(
+            grade_numeric=gnum, original_price=float(prod.price), age_days=age_days,
+        )
+        media = [product_image_urls[suf]] if product_image_urls.get(suf) else []
+        db.add(m.ResaleListing(
+            unit_id=u.id, lister_id=lister, source=source,
+            original_price=float(prod.price), price_min=price_range.min,
+            price_max=price_range.max, list_price=list_price, resale_grade=grade,
+            age_days=age_days, media_urls=media,
+            pricing_rationale=f"Seed depth · grade {grade} · ~{max(1, age_days // 30)} months old",
+            status="active", escrow_status="none",
+            created_at=now - timedelta(days=max(1, age_days - 14)),
+        ))
+        db.add(m.LifeLedgerEvent(unit_id=u.id, event_type="P2P_LISTED",
+                                 created_at=now - timedelta(days=max(1, age_days - 14))))
+
+    def _depth_rescue(prod, who, grade, gnum, i):
+        user = owner[who]
+        days_ago = 12 + (i % 30)
+        u = sold_unit(prod, user, days_ago)
+        u.status = "returned"
+        u.embedding = emb(prod.category, prod.vertical, None)
+        pickup_at = now - timedelta(days=1 + (i % 3))
+        db.add(m.ReturnEvent(unit_id=u.id, user_id=user, reason_code="changed_mind",
+                             status="graded", pickup_at=pickup_at,
+                             created_at=pickup_at - timedelta(days=1)))
+        db.add(m.LifeLedgerEvent(unit_id=u.id, event_type="PICKED_UP", created_at=pickup_at))
+        grade_unit(u, prod, grade, gnum, pickup_at + timedelta(hours=4))
+        ttl_hours = 4 + (i % 10)
+        age_min = 3 if i % 7 == 0 else 30 + (i % 200)  # i%7==0 ⇒ fresh ⇒ embargoed
+        db.add(m.RescueListing(
+            unit_id=u.id, base_discount_pct=0.14 + (i % 6) * 0.02,
+            current_discount_pct=0.14 + (i % 6) * 0.02,
+            ttl_seconds=ttl_hours * 3600, expires_at=now + timedelta(hours=ttl_hours),
+            status="active", scope="local", fulfillment="local_pickup",
+            created_at=now - timedelta(minutes=age_min),
+        ))
+
+    extra_suffixes = sorted(s for s in products if not _is_two_hex(s))
+    depth_embargoed = 0
+    for i, suf in enumerate(extra_suffixes):
+        prod = products[suf]
+        who = "buyer" if i % 2 == 0 else "seller"
+        user = owner[who]
+        grade, gnum = GRADES[i % len(GRADES)]
+        sizes = (manifest_by_suffix.get(suf) or {}).get("sizes") or []
+        size = sizes[len(sizes) // 2] if sizes else None
+        fate = i % 20
+        if fate <= 8:  # 45% — plain delivered order history (returnable + resellable mix)
+            days_ago = 1 + (i * 7) % 40
+            order = _depth_order(user, days_ago)
+            order_item(order, prod, sold_unit(prod, user, days_ago, size=size), size, days_ago)
+            depth["order_history"] += 1
+        elif fate <= 11:  # 15% — order-linked return → graded → local rescue (Path A)
+            days_ago = 10 + (i % 25)
+            ro = make_order(user, days_ago)
+            order_linked_return(ro, prod, user, size, "fit" if size else "defective",
+                                grade, gnum, days_ago=days_ago, pickup_days_ago=1 + (i % 4),
+                                base_discount=0.12 + (i % 5) * 0.02)
+            depth["returns"] += 1
+        elif fate <= 14:  # 15% — pre-listed Second Life (certified + p2p)
+            source = "certified" if i % 2 == 0 else "p2p"
+            _depth_resale(prod, suf, source, who, grade, gnum, 30 + (i * 11) % 260)
+            depth["second_life"] += 1
+        elif fate <= 17:  # 15% — local Rescue listing (some embargoed)
+            _depth_rescue(prod, who, grade, gnum, i)
+            if i % 7 == 0:
+                depth_embargoed += 1
+            depth["rescue"] += 1
+        else:  # 10% — live in-stock catalogue inventory
+            db.add(m.ProductUnit(
+                product_id=prod.id, serial=f"STK-{suf.upper()}", status="in_stock",
+                owner_id=None, size=size, geo_lat=BLR[0] + 0.002, geo_lng=BLR[1] + 0.002,
+                transfer_count=0, embedding=emb(prod.category, prod.vertical, size),
+            ))
+            depth["in_stock"] += 1
+    db.flush()
+
     db.commit()
     return {
         "users": 2,
@@ -775,4 +910,12 @@ def seed_all(db: Session) -> dict:
         "s3_enabled": s3_client.s3_configured(),
         "s3_strategy": s3_client.active_strategy(),
         "product_images_on_s3": s3_product_uploads,
+        # Depth catalogue (the ~61 real "x###" products distributed across flows).
+        "depth_products": len(extra_suffixes),
+        "depth_order_history": depth["order_history"],
+        "depth_returns": depth["returns"],
+        "depth_second_life": depth["second_life"],
+        "depth_rescue": depth["rescue"],
+        "depth_rescue_embargoed": depth_embargoed,
+        "depth_in_stock": depth["in_stock"],
     }

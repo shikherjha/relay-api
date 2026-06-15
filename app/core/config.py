@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     ml_service_url: str = "http://localhost:8001"
     engine_service_url: str = "http://localhost:8002"
 
+    # Extra browser origins allowed to call the API (comma-separated). Local dev
+    # origins are always allowed; in production set this to the app domain, e.g.
+    # CORS_ALLOW_ORIGINS=https://app.yourdomain.com
+    cors_allow_origins: str = ""
+
     # Swap to real services once they're live (mock unblocks parallel work).
     use_mock_ml: bool = True
     use_mock_engine: bool = True
@@ -47,6 +52,9 @@ class Settings(BaseSettings):
     lifeledger_contract_address: str = ""
     # Real on-chain anchoring requires a funded Amoy key; mock anchors locally.
     use_real_ledger: bool = False
+    # Block-explorer base + network label for anchored-tx links in the UI.
+    lifeledger_explorer_base_url: str = "https://amoy.polygonscan.com"
+    lifeledger_network: str = "Polygon Amoy"
 
     embedding_dim: int = 384
     rescue_default_radius_km: float = 3.0

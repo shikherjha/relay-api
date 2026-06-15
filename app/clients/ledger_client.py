@@ -62,3 +62,18 @@ def get_ledger_client() -> LedgerClient:
     if settings.use_real_ledger and settings.lifeledger_private_key:
         return Web3Ledger()
     return MockLedger()
+
+
+def explorer_tx_url(tx_hash: str | None) -> str | None:
+    """Block-explorer URL for a *real* on-chain anchor, else None.
+
+    Only links when real anchoring is enabled and the hash is a full 32-byte tx
+    hash (0x + 64 hex). The demo/seed pseudo-hashes are short and never link, so
+    historical demo events stay unlinked while live anchors point at PolygonScan.
+    """
+    if not (settings.use_real_ledger and tx_hash):
+        return None
+    h = tx_hash if tx_hash.startswith("0x") else f"0x{tx_hash}"
+    if len(h) != 66:
+        return None
+    return f"{settings.lifeledger_explorer_base_url.rstrip('/')}/tx/{h}"

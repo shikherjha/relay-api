@@ -26,7 +26,13 @@ IMAGES_DIR = Path(__file__).resolve().parents[1] / "seed_assets" / "images"
 
 
 def _image_for(category: str | None) -> bytes:
+    """A real seeded JPEG for the category, falling back to tshirt.jpg. Depth
+    categories (laptop, smartphone, …) are stored as ``x###_<cat>.jpg`` so a bare
+    ``<cat>.jpg`` won't exist — never return non-image bytes or relay-ml's
+    bedrock_only grader rejects them (MIME text/plain) with a 503."""
     path = IMAGES_DIR / f"{category or 'tshirt'}.jpg"
+    if not path.exists():
+        path = IMAGES_DIR / "tshirt.jpg"
     return path.read_bytes() if path.exists() else b"fake-image-bytes"
 
 
@@ -37,10 +43,11 @@ def main() -> None:
     print("seed:", reset)
 
     products = client.get("/products").json()
-    assert len(products) == 14, len(products)
+    # 14 curated heroes + a real "depth" catalogue (~61) for demo richness.
+    assert len(products) >= 14, len(products)
     assert all(p.get("image_url") for p in products), "every product needs an image_url"
     fashion = client.get("/products", params={"vertical": "fashion"}).json()
-    assert all(p["vertical"] == "fashion" for p in fashion) and len(fashion) == 9, len(fashion)
+    assert all(p["vertical"] == "fashion" for p in fashion) and len(fashion) >= 9, len(fashion)
     print("catalogue:", len(products), "products · images e.g.", products[0]["image_url"])
 
     pdp = client.get(f"/products/{products[0]['id']}").json()
@@ -59,7 +66,7 @@ def main() -> None:
 
     media = client.post(
         f"/returns/{return_id}/media", headers=H,
-        files=[("files", ("unit.jpg", b"fake-image-bytes", "image/jpeg"))],
+        files=[("files", ("unit.jpg", _image_for("hoodie"), "image/jpeg"))],
     )
     assert media.status_code == 202 and media.json()["status"] == "graded", media.text
 
@@ -165,7 +172,7 @@ def main() -> None:
     # separately against real images when relay-ml runs in bedrock_only mode.
     media2 = client.post(
         f"/returns/{olr_j['id']}/media", headers=H,
-        files=[("files", ("front.jpg", b"fake-image-bytes", "image/jpeg"))],
+        files=[("files", ("front.jpg", _image_for(returnable.get("category")), "image/jpeg"))],
     )
     assert media2.status_code == 202 and len(media2.json()["media_hashes"]) == 1, media2.text
     print("order-linked grade: graded", len(media2.json()["media_hashes"]), "angle")
@@ -339,7 +346,7 @@ def main() -> None:
     assert sret.status_code == 201, sret.text
     sret_id = sret.json()["id"]
     client.post(f"/returns/{sret_id}/media", headers=H,
-                files=[("files", ("unit.jpg", b"fake-image-bytes", "image/jpeg"))])
+                files=[("files", ("unit.jpg", _image_for(size_target.get("category")), "image/jpeg"))])
     spass = client.get(f"/returns/{sret_id}/passport").json()
     assert spass["grade"] in ("A", "A+"), f"size return should be pristine high grade: {spass['grade']}"
     assert not spass["defects"], f"pristine size return should have no defects: {spass}"
