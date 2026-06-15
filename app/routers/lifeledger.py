@@ -33,6 +33,24 @@ def verify(unit_id: str, db: Session = Depends(get_db)) -> VerifyResult:
     tx_hash = anchored.tx_hash if anchored else None
     verified = bool(recomputed and on_chain_hash and recomputed == on_chain_hash)
 
+    # Product context + every user-uploaded image (return grading media folded
+    # into the passport, plus any resale/relist media) so this page works as the
+    # product page too. De-dupe while preserving order.
+    unit = db.get(m.ProductUnit, uid)
+    product = db.get(m.Product, unit.product_id) if unit is not None else None
+    grade = None
+    media: list[str] = []
+    if passport is not None and isinstance(passport.passport, dict):
+        grade = passport.passport.get("grade")
+        media.extend(passport.passport.get("media_urls") or [])
+    for listing in db.execute(
+        select(m.ResaleListing).where(m.ResaleListing.unit_id == uid)
+        .order_by(m.ResaleListing.created_at.desc())
+    ).scalars().all():
+        media.extend(listing.media_urls or [])
+    seen: set[str] = set()
+    media_urls = [u for u in media if u and not (u in seen or seen.add(u))]
+
     return VerifyResult(
         unit_id=unit_id, verified=verified,
         passport_hash=recomputed, on_chain_hash=on_chain_hash, tx_hash=tx_hash,
@@ -43,4 +61,10 @@ def verify(unit_id: str, db: Session = Depends(get_db)) -> VerifyResult:
             )
             for e in events
         ],
+        title=product.title if product else None,
+        category=product.category if product else None,
+        vertical=product.vertical if product else None,
+        image_url=product.image_url if product else None,
+        grade=grade,
+        media_urls=media_urls,
     )

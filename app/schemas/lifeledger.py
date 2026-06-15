@@ -33,3 +33,12 @@ class VerifyResult(BaseModel):
     on_chain_hash: str | None = None
     tx_hash: str | None = None
     events: list[LifeLedgerEvent] = Field(default_factory=list)
+    # Product context + imagery so the provenance page doubles as the product
+    # page: the catalogue image plus every user-uploaded condition shot (from
+    # the return grading and any resale/relist), de-duplicated.
+    title: str | None = None
+    category: str | None = None
+    vertical: str | None = None
+    image_url: str | None = None
+    grade: str | None = None
+    media_urls: list[str] = Field(default_factory=list)

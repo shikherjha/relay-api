@@ -234,7 +234,9 @@ def compute_disposition(
 
     # Two-path disposition → list it. Path A (local rescue) is pickup-anchored;
     # Path B (national certified relist) covers refurb / no-local-demand.
-    if decision.channel in ("rescue", "refurb", "refurbish"):
+    # p2p_resale dispositions also surface the unit on the rescue feed so a
+    # confirmed return is immediately visible (and trackable) rather than vanishing.
+    if decision.channel in ("rescue", "refurb", "refurbish", "p2p_resale", "p2p"):
         anchored = return_event.pickup_at or return_event.created_at
         # SIZE-RETURN WINS: a pristine size/fit return is re-listed at only a
         # minimal markdown (near-original price), not the standard rescue base.

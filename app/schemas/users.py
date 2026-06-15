@@ -40,3 +40,48 @@ class ImpactWallet(BaseModel):
     credits_to_next_tier: float | None = None
     tiers: list[AccessTier] = Field(default_factory=list)
     events: list[ImpactEventOut] = Field(default_factory=list)
+
+
+class ReturnTracking(BaseModel):
+    """One of the caller's returns, with live status + the resulting condition
+    grade and where the item is now headed (rescue / second-life)."""
+
+    return_id: str
+    unit_id: str
+    order_item_id: str | None = None
+    title: str | None = None
+    category: str | None = None
+    vertical: str | None = None
+    image_url: str | None = None
+    reason_code: str | None = None
+    status: str  # initiated | picked_up | graded | flagged
+    created_at: datetime | None = None
+    pickup_slot: str | None = None
+    grade: str | None = None
+    media_urls: list[str] = Field(default_factory=list)
+    # Where the graded unit went next (so the buyer can follow it, even to a
+    # rescue listing they can themselves claim in the demo).
+    disposition_channel: str | None = None  # rescue | p2p_resale | refurb | …
+    rescue_listed: bool = False
+    second_life_listed: bool = False
+
+
+class ResaleTracking(BaseModel):
+    """One of the caller's Second-Life resale listings (p2p) with live status."""
+
+    listing_id: str
+    unit_id: str
+    title: str | None = None
+    category: str | None = None
+    vertical: str | None = None
+    image_url: str | None = None
+    source: str = "p2p"
+    resale_grade: str | None = None
+    list_price: float | None = None
+    price_min: float | None = None
+    price_max: float | None = None
+    status: str = "active"  # active | sold
+    escrow_status: str = "none"
+    age_days: int | None = None
+    created_at: datetime | None = None
+    media_urls: list[str] = Field(default_factory=list)
