@@ -139,7 +139,17 @@ def rescue_feed(
     # Pillar 5 (tiered): green credits buy early access. The caller's lifetime
     # credit tier grants a "lead" — how early before a listing goes public it can
     # be seen. Gold sees from creation, silver later, standard only when public.
-    lead = user_lead_seconds(lifetime_credits(db, to_uuid(user_id)))
+    viewer = to_uuid(user_id)
+    lead = user_lead_seconds(lifetime_credits(db, viewer))
+
+    # A user always sees listings for items THEY returned — the early-access
+    # embargo gives high-tier users a head-start on *others'* drops, it must never
+    # hide your own just-returned item from you (it should land on top instantly).
+    my_returned_units = set(
+        db.execute(
+            select(m.ReturnEvent.unit_id).where(m.ReturnEvent.user_id == viewer)
+        ).scalars().all()
+    )
 
     rows = db.execute(
         select(m.RescueListing).where(m.RescueListing.status == "active")
@@ -150,8 +160,9 @@ def rescue_feed(
         row_scope = row.scope or "local"
         if scope != "all" and row_scope != scope:
             continue
-        if not visible_to(row, lead):
-            continue  # still embargoed for this tier
+        owned = row.unit_id in my_returned_units
+        if not owned and not visible_to(row, lead):
+            continue  # still embargoed for this tier (but never for the returner)
         embargoed = is_embargoed(row)
         unit = db.get(m.ProductUnit, row.unit_id)
         distance = None
@@ -159,7 +170,7 @@ def rescue_feed(
             # Hyperlocal intercept is distance-gated; national (Path B) ships.
             if unit and unit.geo_lat is not None:
                 distance = haversine_km(lat, lng, unit.geo_lat, unit.geo_lng)
-                if distance > radius_km:
+                if distance > radius_km and not owned:
                     continue
         out.append(_to_listing(db, row, unit, distance, early_access=embargoed))
     # Most-recently-returned first across all scopes — a just-returned unit (e.g.

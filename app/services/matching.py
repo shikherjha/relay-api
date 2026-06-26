@@ -101,39 +101,63 @@ def _grade_for(db: Session, unit_id) -> str | None:
 def _matches_for_wish(
     db: Session, wish: m.ReverseWishlist, limit: int, national: dict, ml
 ) -> list[WishMatch]:
-    # Retrieve → rerank (industry pattern). Recall = vertical-gated cosine; rerank
-    # = Bedrock LLM relevance (relay-ml /match-rank) with a deterministic
-    # category-alignment fallback. A hard category veto guarantees a "Macbook"
-    # wish never surfaces earphones or a tee even if the LLM is over-generous.
+    # Retrieve → (optionally) rerank (industry pattern). Recall = vertical-gated
+    # cosine; rerank = Bedrock LLM relevance (relay-ml /match-rank). A HARD
+    # category veto is applied BEFORE the rerank so a "jeans" wish can never
+    # surface a jacket and a "macbook" wish never surfaces earphones — the LLM
+    # may only refine ordering *within* the wish's category, never resurrect a
+    # wrong-category candidate (fixes cross-category bleed).
     wish_vertical = classify_vertical(wish.category)
     pool = _candidate_pool(db, wish, wish_vertical, limit)
     if not pool:
         return []
 
-    candidates = [
-        {
-            "unit_id": str(c["unit"].id), "title": c["title"], "category": c["category"],
-            "price": float(c["price"]) if c["price"] is not None else None,
-        }
-        for c in pool
-    ]
-    try:
-        ai_scores = ml.match_rank(
-            wish=wish.category, size=wish.size,
-            max_price=float(wish.max_price) if wish.max_price is not None else None,
-            candidates=candidates,
-        )
-    except Exception:  # noqa: BLE001 - relay-ml down / no rerank → taxonomy fallback
-        logger.info("match_rank unavailable; falling back to taxonomy relevance", exc_info=True)
-        ai_scores = {}
+    # Stage 0 — deterministic category gate. Only candidates that clear the
+    # relevance floor on category alignment alone survive to the rerank stage.
+    # This guarantees correctness regardless of how generous the LLM is, AND
+    # shrinks the rerank payload (latency win for Genie).
+    gated: list[tuple[dict, float]] = []
+    for c in pool:
+        cat_rel = category_relevance(wish.category, c["category"], c["title"])
+        if cat_rel >= MATCH_RELEVANCE_FLOOR:
+            gated.append((c, cat_rel))
+    if not gated:
+        return []
+
+    # Stage 1 — LLM rerank, but ONLY when it can change the answer: skip the
+    # (slow) Bedrock call when every surviving candidate is already an exact
+    # category match (cat_rel == 1.0), since the deterministic score is final.
+    # This makes the common Genie case (wish jeans → only jeans) instant.
+    needs_rerank = any(cat_rel < 1.0 for _, cat_rel in gated)
+    ai_scores: dict[str, float] = {}
+    if needs_rerank:
+        candidates = [
+            {
+                "unit_id": str(c["unit"].id), "title": c["title"], "category": c["category"],
+                "price": float(c["price"]) if c["price"] is not None else None,
+            }
+            for c, _ in gated
+        ]
+        try:
+            ai_scores = ml.match_rank(
+                wish=wish.category, size=wish.size,
+                max_price=float(wish.max_price) if wish.max_price is not None else None,
+                candidates=candidates,
+            )
+        except Exception:  # noqa: BLE001 - relay-ml down / no rerank → taxonomy fallback
+            logger.info("match_rank unavailable; falling back to taxonomy relevance", exc_info=True)
+            ai_scores = {}
+
+    cat_rel_by_unit = {str(c["unit"].id): cat_rel for c, cat_rel in gated}
 
     def _relevance(c: dict) -> float:
-        cat_rel = category_relevance(wish.category, c["category"], c["title"])
-        if cat_rel <= 0.0:
-            return 0.0  # hard category/vertical veto
+        cat_rel = cat_rel_by_unit.get(str(c["unit"].id), 0.0)
+        if cat_rel < MATCH_RELEVANCE_FLOOR:
+            return 0.0  # hard category veto — LLM cannot override this
         ai = ai_scores.get(str(c["unit"].id))
         return round(0.5 * ai + 0.5 * cat_rel, 4) if ai is not None else cat_rel
 
+    pool = [c for c, _ in gated]
     wisher = db.get(m.User, wish.user_id)
     fit_conf = _fit_confidence(wisher, wish.category)
     size_gate = bool(wish.size)
