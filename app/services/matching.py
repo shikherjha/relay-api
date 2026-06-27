@@ -17,7 +17,7 @@ from app.core.geo import haversine_km
 from app.core.taxonomy import category_relevance, classify_vertical
 from app.models import entities as m
 from app.schemas.resale import PriceRange
-from app.schemas.wishlist import WishMatch
+from app.schemas.wishlist import MatchReason, WishMatch
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,10 @@ CANDIDATE_STATUSES = ("returned", "graded", "in_stock")
 # AI-confirmed matches through, but filters same-vertical-different-category
 # noise (earphones for a "macbook", a tee for a "hoodie" → 0.25).
 MATCH_RELEVANCE_FLOOR = 0.5
+
+# Freshness: items returned within this window get a boost (volatile inventory).
+_FRESHNESS_MAX_HOURS = 72  # 3 days — after this, freshness=1.0 (no boost)
+_FRESHNESS_BOOST_MAX = 1.15  # 15% boost for very fresh items
 
 
 # Which fit-profile axis covers a category (everything else → "tops").
@@ -55,6 +59,73 @@ def _national_listings(db: Session) -> dict:
         .where(m.RescueListing.scope == "national")
     ).scalars().all()
     return {row.unit_id: row for row in rows}
+
+
+def _freshness_score(db: Session, unit_id) -> float:
+    """Freshness boost for recently-returned units (volatile inventory pattern).
+    
+    Items returned in the last few hours get up to a 15% score boost. After
+    _FRESHNESS_MAX_HOURS (3 days), freshness = 1.0 (no boost, no penalty).
+    This makes Genie surface fresh inventory first — matching Vinted/Mercari behavior.
+    """
+    from datetime import datetime, timezone
+    row = db.execute(
+        select(m.ReturnEvent.created_at)
+        .where(m.ReturnEvent.unit_id == unit_id)
+        .order_by(m.ReturnEvent.created_at.desc())
+    ).first()
+    if row is None:
+        return 1.0
+    created = row[0]
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    hours_ago = (now - created).total_seconds() / 3600
+    if hours_ago >= _FRESHNESS_MAX_HOURS:
+        return 1.0
+    # Linear boost: freshest (0h) = _FRESHNESS_BOOST_MAX, at max hours = 1.0
+    return 1.0 + (_FRESHNESS_BOOST_MAX - 1.0) * (1 - hours_ago / _FRESHNESS_MAX_HOURS)
+
+
+def _build_match_reasons(
+    *,
+    rel: float,
+    freshness: float,
+    price_fit: bool,
+    distance: float | None,
+    grade: str | None,
+    category: str | None,
+    wish_category: str,
+) -> list[MatchReason]:
+    """Build explainable match reasons for the Genie UI (Track D §21.3)."""
+    reasons: list[MatchReason] = []
+    # Intent match
+    if rel >= 1.0:
+        reasons.append(MatchReason(type="intent_match", label=f"Exact {wish_category} match", score=rel))
+    elif rel >= 0.5:
+        reasons.append(MatchReason(type="intent_match", label=f"Related {category or 'item'}", score=rel))
+    # Price fit
+    if price_fit:
+        reasons.append(MatchReason(type="price_fit", label="Within your budget", score=1.0))
+    # Geo fit
+    if distance is not None:
+        if distance <= 3.0:
+            reasons.append(MatchReason(type="geo_fit", label=f"Very close ({distance:.1f} km)", score=1.0))
+        elif distance <= 10.0:
+            reasons.append(MatchReason(type="geo_fit", label=f"Nearby ({distance:.1f} km)", score=0.8))
+    # Freshness
+    if freshness > 1.05:
+        minutes_ago = max(1, int((freshness - 1.0) / (_FRESHNESS_BOOST_MAX - 1.0) * _FRESHNESS_MAX_HOURS * 60))
+        if minutes_ago < 60:
+            reasons.append(MatchReason(type="freshness", label=f"Returned {minutes_ago} min ago", score=round(freshness - 1.0, 2)))
+        else:
+            reasons.append(MatchReason(type="freshness", label=f"Returned ~{minutes_ago // 60}h ago", score=round(freshness - 1.0, 2)))
+    # Condition fit
+    if grade and grade in ("A+", "A", "B+"):
+        reasons.append(MatchReason(type="condition_fit", label=f"Grade {grade} — excellent condition", score=1.0))
+    elif grade and grade in ("B",):
+        reasons.append(MatchReason(type="condition_fit", label=f"Grade {grade} — good condition", score=0.7))
+    return reasons
 
 
 def _candidate_pool(db: Session, wish: m.ReverseWishlist, wish_vertical: str | None, limit: int) -> list[dict]:
@@ -183,7 +254,10 @@ def _matches_for_wish(
             if nat is None and distance > radius:
                 continue
         # Relevance is the primary signal; wish_score weights buyer intent.
-        score = max(0.0, min(1.0, rel)) * (wish.wish_score or 0.5)
+        # Freshness boost: recently-returned items are more relevant in volatile
+        # second-hand inventory (Vinted/Mercari pattern — stale items decay).
+        freshness = _freshness_score(db, unit.id)
+        score = max(0.0, min(1.0, rel * freshness)) * (wish.wish_score or 0.5)
         grade = _grade_for(db, unit.id)
 
         price_f = float(price) if price is not None else None
@@ -218,6 +292,11 @@ def _matches_for_wish(
             list_price=list_price,
             price_range=price_range,
             price_fit=price_fit,
+            match_reasons=_build_match_reasons(
+                rel=rel, freshness=freshness, price_fit=price_fit,
+                distance=distance, grade=grade, category=c["category"],
+                wish_category=wish.category,
+            ),
         ))
     # Best relevance first; cosine breaks ties (closer in embedding space).
     out.sort(key=lambda x: x.score, reverse=True)

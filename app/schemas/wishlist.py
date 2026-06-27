@@ -25,6 +25,13 @@ class Wishlist(BaseModel):
     wish_score: float | None = None
 
 
+class MatchReason(BaseModel):
+    """Explainable reason why a candidate matched a wish (Track D §21.3)."""
+    type: str  # intent_match, price_fit, size_fit, geo_fit, freshness, condition_fit
+    label: str  # human-readable reason
+    score: float = Field(default=1.0, ge=0, le=1)
+
+
 class WishMatch(BaseModel):
     wish_id: str
     unit_id: str
@@ -49,3 +56,5 @@ class WishMatch(BaseModel):
     list_price: float | None = None
     price_range: PriceRange | None = None
     price_fit: bool = False
+    # Track D §21.3: explainable match reasons for Genie UI.
+    match_reasons: list[MatchReason] = Field(default_factory=list)
