@@ -177,7 +177,12 @@ def main() -> None:
     # Differentiator #2 — "what people actually returned this for" preempt on a
     # flagged electronics SKU (data Amazon's static FAQ never shows).
     flagged_ele = next((p for p in electronics
-                        if any(s["sku"] == p["sku"] for s in ops_health)), None)
+                        if any(
+                            s["sku"] == p["sku"]
+                            and s["dominant_reason"] != "wrong_item"
+                            and s["recommendation"]
+                            for s in ops_health
+                        )), None)
     if flagged_ele:
         fe_rc = client.get(f"/products/{flagged_ele['id']}/return-confidence", headers=BUYER_H).json()
         fe_item = fe_rc["items"][0]
