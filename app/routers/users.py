@@ -11,6 +11,12 @@ from app.core.deps import current_user_id
 from app.core.ids import to_uuid
 from app.db.session import get_db
 from app.models import entities as m
+from app.schemas.fit_profiles import (
+    FitProfilesState,
+    ProfileUpsert,
+    SetActiveProfile,
+    SetupUpsert,
+)
 from app.schemas.users import (
     AccessTier,
     FitProfile,
@@ -19,6 +25,7 @@ from app.schemas.users import (
     ResaleTracking,
     ReturnTracking,
 )
+from app.services import fit_profiles as fp_service
 from app.services.rescue import access_tiers, user_tier
 
 router = APIRouter(prefix="/users/me", tags=["users"])
@@ -44,6 +51,72 @@ def get_fit_profile(user_id: str = Depends(current_user_id), db: Session = Depen
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
     return FitProfile(user_id=str(user.id), return_rate=user.return_rate, fit_profile=user.fit_profile or {})
+
+
+def _require_user(user_id: str, db: Session) -> m.User:
+    user = db.get(m.User, to_uuid(user_id, what="user id"))
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return user
+
+
+@router.get("/fit-profiles", response_model=FitProfilesState)
+def list_fit_profiles(
+    user_id: str = Depends(current_user_id), db: Session = Depends(get_db),
+) -> FitProfilesState:
+    """The shopper's Fit Profiles ("who are you shopping for?") + the active one."""
+    return fp_service.load_state(_require_user(user_id, db))
+
+
+@router.post("/fit-profiles", response_model=FitProfilesState)
+def upsert_fit_profile(
+    payload: ProfileUpsert,
+    user_id: str = Depends(current_user_id),
+    db: Session = Depends(get_db),
+) -> FitProfilesState:
+    """Create (no id) or update (id set) a Fit Profile + its wardrobe anchors."""
+    user = _require_user(user_id, db)
+    try:
+        return fp_service.upsert_profile(db, user, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="profile not found")
+
+
+@router.delete("/fit-profiles/{profile_id}", response_model=FitProfilesState)
+def delete_fit_profile(
+    profile_id: str,
+    user_id: str = Depends(current_user_id),
+    db: Session = Depends(get_db),
+) -> FitProfilesState:
+    user = _require_user(user_id, db)
+    try:
+        return fp_service.delete_profile(db, user, profile_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="cannot delete this profile")
+
+
+@router.post("/fit-profiles/active", response_model=FitProfilesState)
+def set_active_fit_profile(
+    payload: SetActiveProfile,
+    user_id: str = Depends(current_user_id),
+    db: Session = Depends(get_db),
+) -> FitProfilesState:
+    user = _require_user(user_id, db)
+    try:
+        return fp_service.set_active(db, user, payload.profile_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="profile not found")
+
+
+@router.put("/setup", response_model=FitProfilesState)
+def set_device_setup(
+    payload: SetupUpsert,
+    user_id: str = Depends(current_user_id),
+    db: Session = Depends(get_db),
+) -> FitProfilesState:
+    """Save the buyer's device setup for electronics compatibility checks
+    (e.g. {"phone": "ios", "laptop": "usb-c"}). Self profile only (§21.1)."""
+    return fp_service.set_setup(db, _require_user(user_id, db), payload.setup)
 
 
 @router.get("/impact", response_model=ImpactWallet)

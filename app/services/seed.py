@@ -239,11 +239,49 @@ def seed_all(db: Session) -> dict:
     manifest = _load_manifest()
     manifest_by_suffix = {e["suffix"]: e for e in manifest}
 
+    # Fit Profiles (plan.md §21.1) — "who are you shopping for?". Stored in the
+    # hybrid JSONB shape: legacy flat axis keys mirror the SELF profile (so
+    # matching/bracketing keep working), plus `profiles` + `active_profile`.
+    # Wardrobe anchors carry a known brand + size (True Fit-style), the strongest
+    # signal for a single recommended size.
+    seller_fit = {
+        "tops": "M", "bottoms": "32",  # legacy mirror of the self profile
+        "active_profile": "self",
+        "profiles": [
+            {"id": "self", "name": "You", "relationship": "self", "is_self": True,
+             "anchors": {"tops": {"size": "M", "brand": "Uniqlo"},
+                         "bottoms": {"size": "32", "brand": "Levi's"}},
+             "prefs": {"fit": "regular"}},
+        ],
+    }
+    buyer_fit = {
+        "tops": "M",  # legacy mirror of the self profile
+        "active_profile": "self",
+        "profiles": [
+            # NB: SELF carries only a `tops` anchor — adding a `shoes` anchor would
+            # relax matching._fit_confidence and let a size-11 sneaker through the
+            # wishlist size gate (smoke D1b). Keep it tops-only on purpose.
+            {"id": "self", "name": "You", "relationship": "self", "is_self": True,
+             "anchors": {"tops": {"size": "M", "brand": "Uniqlo"}},
+             "prefs": {"fit": "regular"},
+             # Electronics setup (§21.1 Phase 3) → personalized compatibility
+             # verdict ("Set up for your iPhone ✓") on electronics PDPs/cart.
+             "setup": {"phone": "ios", "laptop": "usb-c"}},
+            # Buying-for-someone-else demo: a partner who wears a smaller top, so the
+            # SAME hoodie recommends S for her vs M for the buyer.
+            {"id": "priya", "name": "Priya", "relationship": "partner", "is_self": False,
+             "anchors": {"tops": {"size": "S", "brand": "H&M"}},
+             "prefs": {}},
+            # A child profile with no anchor yet → shows the one-time "add size" prompt.
+            {"id": "aarav", "name": "Aarav", "relationship": "child", "is_self": False,
+             "anchors": {}, "prefs": {}},
+        ],
+    }
     db.add_all([
         m.User(id=DEMO_USER, email="demo@relay.dev", name="Demo Seller", return_rate=0.22,
-               fit_profile={"tops": "M", "bottoms": "32"}, rescue_eligible=True),
+               fit_profile=seller_fit, rescue_eligible=True),
         m.User(id=BUYER_USER, email="buyer@relay.dev", name="Local Buyer", return_rate=0.05,
-               fit_profile={"tops": "M"}, rescue_eligible=True),
+               fit_profile=buyer_fit, rescue_eligible=True),
     ])
     db.flush()
 
@@ -411,10 +449,27 @@ def seed_all(db: Session) -> dict:
                             unlock_at=now + timedelta(days=7)),
     ])
 
-    # Bracketing demo: 3 sizes of the same tee in the seller's cart.
+    # Bracketing demo: 3 sizes of the same tee in the seller's cart, all for the
+    # SAME person ("self") → Return Confidence LOW, "keep size M" intervention.
     for size in ("S", "M", "L"):
         db.add(m.CartItem(user_id=DEMO_USER, product_id=products["a1"].id,
-                          sku="FAS-TS-001", size=size, qty=1))
+                          sku="FAS-TS-001", size=size, qty=1, profile_id="self"))
+
+    # Per-line recipient demo for the buyer (§21.1 cart v2): the SAME hoodie in two
+    # sizes — but one for himself (M, his usual → keeper) and one for Priya (L, but
+    # she wears S → "Priya usually wears S"). Different people, so it is NOT a
+    # bracketing return. Plus an electronics line (headphones for himself →
+    # "Set up for your iPhone" verdict) and an unassigned gift tee ("Anyone").
+    db.add_all([
+        m.CartItem(user_id=BUYER_USER, product_id=products["a3"].id,
+                   sku="FAS-HD-001", size="M", qty=1, profile_id="self"),
+        m.CartItem(user_id=BUYER_USER, product_id=products["a3"].id,
+                   sku="FAS-HD-001", size="L", qty=1, profile_id="priya"),
+        m.CartItem(user_id=BUYER_USER, product_id=products["a4"].id,
+                   sku="ELE-HP-001", qty=1, profile_id="self"),
+        m.CartItem(user_id=BUYER_USER, product_id=products["a1"].id,
+                   sku="FAS-TS-001", size="M", qty=1, profile_id=None),
+    ])
 
     # Hero hoodie: a full first-life → second-life chain for the passport page.
     db.add_all([
@@ -905,7 +960,7 @@ def seed_all(db: Session) -> dict:
         "return_events": (sum(len(r) for _, r in _RETURN_HISTORY) + 3
                           + seller_refurb_units + wrong_item_flagged + exchanges),
         "impact_events": len(seller_events) + len(buyer_events) + len(bulk),
-        "cart_items": 3,
+        "cart_items": 7,
         "hero_hoodie_unit": HERO_HOODIE_UNIT_ID,
         "s3_enabled": s3_client.s3_configured(),
         "s3_strategy": s3_client.active_strategy(),

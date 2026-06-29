@@ -57,6 +57,141 @@ def main() -> None:
     assert cart["bracketing"] and cart["bracketing"][0]["distinct_variants"] == 3, cart
     print("bracketing:", cart["bracketing"][0]["message"])
 
+    # ── Track D · Return Confidence (prevention beyond bracketing, §21.1) ──
+    rc = client.get("/cart/return-confidence", headers=H).json()
+    assert rc["confidence_band"] in ("high", "medium", "low"), rc
+    assert 0.0 <= rc["keep_score"] <= 1.0, rc
+    rc_driver_types = {d["type"] for d in rc["drivers"]}
+    assert "bracketing" in rc_driver_types, rc  # seller's 3-size tee cart
+    assert rc["confidence_band"] in ("low", "medium"), rc
+    rc_actions = {iv.get("action") for iv in rc["interventions"]}
+    assert "remove_extra_sizes" in rc_actions, rc  # an ACTION, not just a warning
+    keep_iv = next(iv for iv in rc["interventions"]
+                   if iv["type"] == "size_recommendation" and iv.get("suggested_size"))
+    print("return-confidence (cart):", rc["confidence_band"], "keep", rc["keep_score"],
+          "· drivers", sorted(rc_driver_types), "· keep size", keep_iv["suggested_size"])
+
+    # Per-line recipients (§21.1 cart v2): the buyer's two hoodie lines are for
+    # DIFFERENT people (M for self, L for Priya) → NOT a bracketing return.
+    rc_buyer = client.get("/cart/return-confidence", headers=BUYER_H).json()
+    buyer_drivers = {d["type"] for d in rc_buyer["drivers"]}
+    assert "bracketing" not in buyer_drivers and "duplicate_variant" not in buyer_drivers, rc_buyer
+    hoodie_items = [it for it in rc_buyer["items"] if (it["title"] or "").find("Hoodie") >= 0]
+    assert len(hoodie_items) == 2, rc_buyer  # one group per recipient, scored apart
+    assert {it["for_self"] for it in hoodie_items} == {True, False}, hoodie_items
+    # The buyer's electronics line gets a personalized "works with what you own" verdict.
+    assert "compatibility_match" in buyer_drivers, rc_buyer
+    # The unassigned tee is an "Anyone" gift → scored neutral (no size penalty).
+    assert any(it["profile_id"] == "anyone" for it in rc_buyer["items"]), rc_buyer
+    print("return-confidence (buyer · per-line):", rc_buyer["confidence_band"],
+          "keep", rc_buyer["keep_score"], "· items", len(rc_buyer["items"]))
+
+    # Reassigning the spare hoodie to the SAME person turns it back into a duplicate
+    # — proving bracketing is now per-recipient.
+    spare_line = next(it for it in hoodie_items if not it["for_self"])["line_ids"][0]
+    client.patch(f"/cart/{spare_line}", json={"profile_id": "self"}, headers=BUYER_H)
+    rc_same = client.get("/cart/return-confidence", headers=BUYER_H).json()
+    assert any(d["type"] == "duplicate_variant" for d in rc_same["drivers"]), rc_same
+    client.patch(f"/cart/{spare_line}", json={"profile_id": "priya"}, headers=BUYER_H)  # restore split
+    print("per-recipient bracketing: split=clean, same-person=duplicate ✓")
+
+    # PDP path ties prevention to the SAME ops SKU return-health signal (one story).
+    ops_health = client.get("/ops/high-return-skus").json()
+    fit_reasons = {"too_small", "too_large", "fit", "not_as_described", "defective"}
+    health_sku = next((s for s in ops_health
+                       if s["dominant_reason"] in fit_reasons and s["recommendation"]), None)
+    assert health_sku is not None, ops_health
+    health_product = next(p for p in products if p["sku"] == health_sku["sku"])
+    pdp_rc = client.get(f"/products/{health_product['id']}/return-confidence",
+                        params={"size": "M"}, headers=BUYER_H).json()
+    assert "sku_return_health" in {d["type"] for d in pdp_rc["drivers"]}, pdp_rc
+    print("return-confidence (PDP · ops tie-in):", health_product["sku"],
+          pdp_rc["confidence_band"], "· drivers", sorted({d["type"] for d in pdp_rc["drivers"]}))
+
+    # A confident, in-profile pick reads with a user-fit-confidence driver.
+    tee = next(p for p in products if p["sku"] == "FAS-TS-001")
+    pdp_hi = client.get(f"/products/{tee['id']}/return-confidence",
+                        params={"size": "M"}, headers=BUYER_H).json()
+    assert "fit_confidence" in {d["type"] for d in pdp_hi["drivers"]}, pdp_hi
+    print("return-confidence (confident pick):", pdp_hi["confidence_band"], "keep", pdp_hi["keep_score"])
+
+    # ── Track D · Fit Profiles ("who are you shopping for?", §21.1 Phase 1) ──
+    profiles = client.get("/users/me/fit-profiles", headers=BUYER_H).json()
+    assert profiles["active_profile"] == "self", profiles
+    assert any(p["is_self"] and p["name"] == "You" for p in profiles["profiles"]), profiles
+    partner = next(p for p in profiles["profiles"] if p["relationship"] == "partner")
+    assert partner["anchors"].get("tops", {}).get("size") == "S", partner
+
+    hoodie = next(p for p in products if p["sku"] == "FAS-HD-001")
+    # SELF (tops M) on the hoodie at size M → recommends M for "You".
+    rc_self = client.get(f"/products/{hoodie['id']}/return-confidence",
+                         params={"size": "M"}, headers=BUYER_H).json()
+    assert rc_self["for_self"] is True and rc_self["profile_name"] == "You", rc_self
+    assert rc_self["items"][0]["recommended_size"] == "M", rc_self
+    # Same hoodie + same M selection, but shopping for the partner (tops S):
+    # personalized → not-for-self, recommends S, surfaces a size-mismatch driver.
+    rc_partner = client.get(f"/products/{hoodie['id']}/return-confidence",
+                            params={"size": "M", "profile_id": partner["id"]},
+                            headers=BUYER_H).json()
+    assert rc_partner["for_self"] is False, rc_partner
+    assert rc_partner["profile_name"] == partner["name"], rc_partner
+    assert rc_partner["items"][0]["recommended_size"] == "S", rc_partner
+    assert "size_mismatch" in {d["type"] for d in rc_partner["drivers"]}, rc_partner
+    # Buying for someone else suppresses the personal "first time buying" signal.
+    assert "new_brand" not in {d["type"] for d in rc_partner["drivers"]}, rc_partner
+    print("fit-profiles:", [p["name"] for p in profiles["profiles"]],
+          "· self rec", rc_self["items"][0]["recommended_size"],
+          "· partner rec", rc_partner["items"][0]["recommended_size"])
+
+    # Setting the active profile persists (it's the default recipient for new PDP
+    # adds; the cart itself is now scored per-line, not by one active profile).
+    act = client.post("/users/me/fit-profiles/active",
+                      json={"profile_id": partner["id"]}, headers=BUYER_H).json()
+    assert act["active_profile"] == partner["id"], act
+    # Restore self so the rest of the suite stays deterministic.
+    client.post("/users/me/fit-profiles/active", json={"profile_id": "self"}, headers=BUYER_H)
+
+    # Electronics "fit-for-purpose" lens (§21.1 Phase 3): no size, but a
+    # deterministic compatibility checklist + a high keep score.
+    electronics = client.get("/products", params={"vertical": "electronics"}).json()
+    assert electronics, "expected an electronics catalogue"
+    ele_rc = client.get(
+        f"/products/{electronics[0]['id']}/return-confidence", headers=BUYER_H
+    ).json()
+    compat = next(
+        (iv for iv in ele_rc["interventions"] if iv["type"] == "compatibility_check"), None
+    )
+    assert compat and compat.get("items"), ele_rc
+    assert ele_rc["items"][0]["recommended_size"] is None, ele_rc
+    print("fit-for-purpose (electronics):", electronics[0]["title"],
+          "· checklist", len(compat["items"]), "· keep", ele_rc["keep_score"])
+
+    # Differentiator #1 — personalized "works with what you own" verdict. Buyer's
+    # saved setup has phone=ios → headphones read "Set up for your iPhone".
+    headphones = next(p for p in electronics if p["sku"] == "ELE-HP-001")
+    hp_rc = client.get(f"/products/{headphones['id']}/return-confidence", headers=BUYER_H).json()
+    verdicts = [d["label"] for d in hp_rc["drivers"] if d["type"] == "compatibility_match"]
+    assert verdicts, hp_rc
+    print("electronics verdict:", verdicts[0])
+
+    # Differentiator #2 — "what people actually returned this for" preempt on a
+    # flagged electronics SKU (data Amazon's static FAQ never shows).
+    flagged_ele = next((p for p in electronics
+                        if any(s["sku"] == p["sku"] for s in ops_health)), None)
+    if flagged_ele:
+        fe_rc = client.get(f"/products/{flagged_ele['id']}/return-confidence", headers=BUYER_H).json()
+        fe_item = fe_rc["items"][0]
+        assert fe_item["return_reason"], fe_rc
+        assert any(iv["type"] == "return_insight" for iv in fe_rc["interventions"]), fe_rc
+        print("electronics insight:", flagged_ele["sku"], "→", fe_item["return_reason"],
+              f"({int((fe_item['return_reason_share'] or 0) * 100)}%)")
+
+    # Device setup round-trips (electronics §21.1) and lands on the self profile.
+    setup_state = client.put("/users/me/setup",
+                             json={"setup": {"phone": "ios", "laptop": "usb-c"}},
+                             headers=BUYER_H).json()
+    assert next(p for p in setup_state["profiles"] if p["is_self"])["setup"].get("phone") == "ios", setup_state
+
     # Hero hoodie unit — fixed seed ID for reproducible demo deep-links.
     unit_id = HERO_HOODIE_UNIT_ID
 

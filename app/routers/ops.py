@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,51 +9,21 @@ from app.models import entities as m
 from app.schemas.ops import ChainDepthRow, HighReturnSku, OpsImpact, OpsRescueLive
 from app.schemas.rescue import RescueListing
 from app.services.rescue import current_discount
+from app.services.return_signals import aggregate_sku_health
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
-# Reason -> proactive catalog recommendation (seller-side return signals).
-_REASON_FIX = {
-    "not_as_described": "review listing copy + product photos",
-    "too_small": "add a size-up note / update size chart",
-    "too_large": "add a size-down note / update size chart",
-    "fit": "update size chart + fit guidance",
-    "defective": "audit supplier QC for this SKU",
-    # Fulfillment-accuracy signal: wrong item shipped → pick-pack / SKU mapping.
-    "wrong_item": "audit pick-pack accuracy + SKU-to-bin mapping",
-}
-
-# Only emit a catalog-fix recommendation once a SKU crosses these thresholds.
-SELLER_SIGNAL_MIN_RETURNS = 2
-SELLER_SIGNAL_MIN_RATE = 0.25
-
 
 def _aggregate_skus(db: Session) -> list[HighReturnSku]:
-    rows = db.execute(
-        select(m.Product.sku, m.Product.title, m.ReturnEvent.reason_code)
-        .join(m.ProductUnit, m.ProductUnit.id == m.ReturnEvent.unit_id)
-        .join(m.Product, m.Product.id == m.ProductUnit.product_id)
-    ).all()
-
-    counts: dict[str, int] = defaultdict(int)
-    titles: dict[str, str] = {}
-    reasons: dict[str, Counter] = defaultdict(Counter)
-    for sku, title, reason in rows:
-        counts[sku] += 1
-        titles[sku] = title
-        reasons[sku][reason] += 1
-
-    out: list[HighReturnSku] = []
-    for sku, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
-        dominant = reasons[sku].most_common(1)[0][0] if reasons[sku] else None
-        rate = min(n / 10.0, 1.0)
-        flagged = n >= SELLER_SIGNAL_MIN_RETURNS or rate >= SELLER_SIGNAL_MIN_RATE
-        out.append(HighReturnSku(
-            sku=sku, title=titles.get(sku), return_count=n, return_rate=rate,
-            dominant_reason=dominant,
-            recommendation=_REASON_FIX.get(dominant) if (flagged and dominant) else None,
-        ))
-    return out
+    # Shared with the customer-facing Return Confidence layer (one story).
+    return [
+        HighReturnSku(
+            sku=h.sku, title=h.title, return_count=h.return_count,
+            return_rate=h.return_rate, dominant_reason=h.dominant_reason,
+            recommendation=h.recommendation,
+        )
+        for h in aggregate_sku_health(db)
+    ]
 
 
 @router.get("/high-return-skus", response_model=list[HighReturnSku])

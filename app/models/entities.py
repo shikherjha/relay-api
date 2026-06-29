@@ -256,6 +256,9 @@ class CartItem(Base):
     size: Mapped[str | None] = mapped_column(String(32))
     variant: Mapped[str | None] = mapped_column(String(64))
     qty: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # Which Fit Profile this line is *for* (§21.1). NULL = "Anyone" (unassigned /
+    # gift, scored neutral). Lets bracketing group per-recipient.
+    profile_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = _created_at()
 
 
