@@ -68,11 +68,11 @@ _SEV_RANK = {"high": 3, "medium": 2, "low": 1}
 
 # Customer-facing, confidence-building copy for a SKU's dominant return reason.
 _REASON_CUSTOMER_COPY = {
-    "too_small": "Shoppers say this runs small — size up for the best fit.",
-    "too_large": "Shoppers say this runs large — size down for the best fit.",
-    "fit": "Fit varies on this item — check the size chart before you buy.",
+    "too_small": "Shoppers say this runs small, so size up for the best fit.",
+    "too_large": "Shoppers say this runs large, so size down for the best fit.",
+    "fit": "Fit varies on this item, so check the size chart before you buy.",
     "not_as_described": "Check the photos and details so it's exactly what you expect.",
-    "defective": "Every unit is condition-graded — buy with our guarantee.",
+    "defective": "Every unit is inspected and condition-graded, so you're covered by our guarantee.",
 }
 
 _FIT_FLAG_COPY = {
@@ -372,6 +372,7 @@ def _score_product(
     # Electronics "what people returned this for" preempt.
     return_reason: str | None = None
     return_reason_share: float | None = None
+    return_rate: float | None = None
 
     # 1) Bracketing / duplicate variant (cart-shape signal).
     if distinct >= 3:
@@ -419,10 +420,13 @@ def _score_product(
                     type="fit_review", action="review_fit", product_id=pid, label=copy,
                 ))
         else:
-            # Electronics differentiator #2 — surface the SKU's REAL dominant return
-            # reason + share (data Amazon's static FAQ never shows) and preempt it.
+            # Electronics differentiator #2 — surface the SKU's REAL return RATE
+            # (how often it's returned) with the dominant reason as soft context,
+            # data Amazon's static FAQ never shows, then preempt it. We show the
+            # return rate (not the defect-share) so it reads as honest, not alarming.
             return_reason = h.dominant_reason
             return_reason_share = h.dominant_share
+            return_rate = h.return_rate
             interventions.append(ConfidenceIntervention(
                 type="return_insight", product_id=pid,
                 label=copy or "Check the specs and photos so it's exactly what you expect.",
@@ -519,6 +523,7 @@ def _score_product(
         keep_score=round(score, 3), confidence_band=_band(score),
         recommended_size=rec_size, recommended_reason=rec_reason,
         return_reason=return_reason, return_reason_share=return_reason_share,
+        return_rate=return_rate,
         drivers=drivers, interventions=interventions,
     )
 

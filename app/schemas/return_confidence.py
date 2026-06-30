@@ -57,10 +57,12 @@ class ProductConfidence(BaseModel):
     recommended_size: str | None = None
     recommended_reason: str | None = None
     # Electronics "what people actually returned this for" preempt — the SKU's
-    # dominant return reason + its share, surfaced as a differentiator vs the
-    # static description/FAQ.
+    # approximate RETURN RATE (share of buyers who return it, 0–1) plus the
+    # dominant return reason as soft context. We surface the return rate (not the
+    # defect-share) so the copy reads as honest transparency, not alarm.
     return_reason: str | None = None
     return_reason_share: float | None = None
+    return_rate: float | None = None
     drivers: list[ConfidenceDriver] = Field(default_factory=list)
     interventions: list[ConfidenceIntervention] = Field(default_factory=list)
 
