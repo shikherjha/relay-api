@@ -240,6 +240,60 @@ def main() -> None:
     assert len(nocred_feed) < len(feed), (len(nocred_feed), len(feed))
     print(f"gating: zero-credit shopper sees {len(nocred_feed)} public listing(s); embargoed hidden")
 
+    # ── Rescue Dispatch Score (§21.4) — Uber/FoodMatch-style local dispatch ──
+    # The feed is now a per-viewer edge ranking: every listing carries a
+    # dispatch_score + human reasons, and it's ordered by that score.
+    dgeo = {"lat": 12.9716, "lng": 77.5946, "radius_km": 15}
+    bfeed = client.get("/rescue/feed", params={**dgeo, "scope": "local"}, headers=BUYER_H).json()
+    assert bfeed and all(x.get("dispatch_score") is not None for x in bfeed), \
+        "every rescue listing must be dispatch-scored"
+    reason_codes = {rr["code"] for x in bfeed for rr in (x.get("dispatch_reasons") or [])}
+    assert "matches_your_wish" in reason_codes, bfeed  # the buyer's wishes hit local rescues
+    print("dispatch (buyer · local):", len(bfeed), "scored listing(s); reasons", sorted(reason_codes))
+
+    # The demo jacket matches the buyer's "jacket L" wish AND is near-expiry, so
+    # one card reads both "Matches your wish" and "Clearing soon".
+    dispatch_unit = reset["dispatch_demo_unit"]
+    jacket = next((x for x in bfeed if x["unit_id"] == dispatch_unit), None)
+    assert jacket is not None, "seeded dispatch-demo jacket should be on the buyer feed"
+    jcodes = {rr["code"] for rr in (jacket.get("dispatch_reasons") or [])}
+    assert "matches_your_wish" in jcodes and "ttl_urgent" in jcodes, jacket
+    print("dispatch card:", jacket["title"], "score", jacket["dispatch_score"], "→", sorted(jcodes))
+
+    # National relists ship → a national card never reads a local-only urgency.
+    nat = client.get("/rescue/feed", params={**dgeo, "scope": "national"}, headers=BUYER_H).json()
+    assert nat and all(
+        "ttl_urgent" not in {rr["code"] for rr in (x.get("dispatch_reasons") or [])} for x in nat
+    ), nat
+    print("dispatch (national):", len(nat), "ship-only listing(s) — no local urgency")
+
+    # Per-viewer + guardrail terms are deterministic — prove the formula directly
+    # via the mock scorer, which is also the engine's fallback parity path.
+    from app.clients.engine_client import MockEngineClient
+    from app.schemas.dispatch import DispatchCandidate, DispatchRequest, DispatchViewer
+
+    def _cand(lid, **kw):
+        base = dict(listing_id=lid, channel="rescue", scope="local", grade_numeric=0.9,
+                    distance_km=2.0, radius_km=15.0, delivery_km=2.0,
+                    ttl_remaining_frac=0.5, transfer_count=0)
+        base.update(kw)
+        return DispatchCandidate(**base)
+
+    eng = MockEngineClient()
+    pair = {s.listing_id: s for s in eng.score_dispatch(DispatchRequest(
+        viewer=DispatchViewer(eligible=True),
+        candidates=[_cand("match", viewer_wish_match=0.9), _cand("plain", viewer_wish_match=0.0)],
+    )).scores}
+    assert pair["match"].dispatch_score > pair["plain"].dispatch_score, pair  # wish match lifts rank
+    assert any(r.code == "matches_your_wish" for r in pair["match"].dispatch_reasons), pair["match"]
+    risk = eng.score_dispatch(DispatchRequest(
+        viewer=DispatchViewer(eligible=False),
+        candidates=[_cand("x", viewer_wish_match=0.9)],
+    )).scores[0]
+    assert any(r.code == "claim_risk" for r in risk.dispatch_reasons), risk
+    engine_mode_d = "mock" if settings.use_mock_engine else "REAL relay-engine"
+    print(f"dispatch parity [{engine_mode_d}]: wish-match outranks plain; ineligible → claim_risk")
+
     # pgvector cosine matching: buyer's hoodie wish should match the returned hoodie unit.
     matches = client.get("/wishlist/matches", headers=BUYER_H).json()
     assert len(matches) >= 1 and matches[0]["score"] > 0, matches

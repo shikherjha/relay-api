@@ -7,6 +7,7 @@ before Bhavya's service URL is live; swap via `USE_MOCK_ML=false` + `ML_SERVICE_
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -24,6 +25,8 @@ from app.schemas.ml import (
     WishScoreResponse,
 )
 from app.schemas.resale import PriceRange, ResaleAssessment
+
+logger = logging.getLogger(__name__)
 
 # Media kind hint for grade_and_price (images = 1-8 angle photos; video = one clip).
 ResaleMedia = list[tuple[str, bytes]]
@@ -464,10 +467,17 @@ class HTTPMLClient:
             return EmbedResponse.model_validate(resp.json())
 
     def wish_score(self, req: WishScoreRequest) -> WishScoreResponse:
-        with self._client() as c:
-            resp = c.post("/wish-score", json=req.model_dump())
-            resp.raise_for_status()
-            return WishScoreResponse.model_validate(resp.json())
+        # /wish-score is a Bedrock LLM call, so it gets the longer grade timeout
+        # (not the 10s default) and falls back to the deterministic mock on any
+        # transport fault — creating a wish must never 500 on an ML hiccup.
+        try:
+            with self._client(self._grade_timeout) as c:
+                resp = c.post("/wish-score", json=req.model_dump())
+                resp.raise_for_status()
+                return WishScoreResponse.model_validate(resp.json())
+        except Exception:
+            logger.info("wish-score via relay-ml unavailable; using local fallback", exc_info=True)
+            return MockMLClient().wish_score(req)
 
     def match_rank(
         self, *, wish: str, size: str | None, max_price: float | None,

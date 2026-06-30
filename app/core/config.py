@@ -85,6 +85,27 @@ class Settings(BaseSettings):
     # shipped national fulfillment.
     credit_locality_multiplier: float = 1.25
 
+    # ── Rescue Dispatch Score (§21.4) ────────────────────────────────────────
+    # Per-viewer edge-utility weights. Positives ideally sum to 1.0; the two risk
+    # terms subtract. MUST mirror relay-engine config (the mock engine uses these
+    # so engine/fallback stay in parity).
+    dispatch_w_demand: float = 0.28
+    dispatch_w_distance: float = 0.18
+    dispatch_w_ttl: float = 0.12
+    dispatch_w_price: float = 0.12
+    dispatch_w_keep: float = 0.15
+    dispatch_w_carbon: float = 0.15
+    dispatch_w_fail_risk: float = 0.5
+    dispatch_w_chain_risk: float = 0.2
+    # kg net CO2 that maps to a full carbon term; national relist last-mile est.
+    dispatch_carbon_norm_kg: float = 3.0
+    dispatch_national_delivery_km: float = 40.0
+    # Hybrid early access: a strong-wish, in-radius buyer earns up to this extra
+    # lead (seconds) on top of their credit tier — best-matched first, not just
+    # highest-credit. Gated by the wish-match floor.
+    dispatch_early_access_lead_seconds: int = 1800
+    dispatch_wish_match_floor: float = 0.45
+
     # ── Track B "Second Life" resell/republish ──────────────────────────────
     # Return window: a delivered order line is *returnable* while inside it and
     # *resellable* once it expires (the owner can re-list it for a second life).

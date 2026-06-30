@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.dispatch import DispatchReason
 from app.schemas.resale import PriceRange
 
 RescueStatus = Literal["active", "claimed", "expired", "cancelled"]
@@ -48,6 +49,11 @@ class RescueListing(BaseModel):
     # window — only high-credit users see it before `early_access_until`.
     early_access: bool = False
     early_access_until: datetime | None = None
+    # Rescue Dispatch Score (§21.4) — per-viewer edge utility + the human reasons
+    # it's surfaced ("Best local fit", "Matches your wish", "Clearing soon"). The
+    # feed sorts by this; None until scored.
+    dispatch_score: float | None = None
+    dispatch_reasons: list[DispatchReason] = Field(default_factory=list)
 
 
 class RescueClaimResult(BaseModel):
@@ -66,3 +72,7 @@ class PairMatch(BaseModel):
     score: float = Field(..., ge=0, le=1)
     distance_km: float | None = None
     status: str = "proposed"
+    # A pair swap is a special bipartite dispatch edge: no payment, both wishes
+    # satisfied, lowest net carbon (one local leg each). Same framing as the feed.
+    dispatch_score: float | None = None
+    dispatch_reasons: list[DispatchReason] = Field(default_factory=list)

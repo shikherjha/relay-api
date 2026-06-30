@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.geo import haversine_km
 from app.models import entities as m
+from app.schemas.dispatch import DispatchReason
 from app.schemas.rescue import PairMatch
 
 SIM_THRESHOLD = 0.6
@@ -92,12 +93,25 @@ def find_pairs(db: Session, radius_km: float | None = None, persist: bool = True
                     unit_a=unit_a.id, unit_b=unit_b.id, user_a=a, user_b=b,
                     distance_km=distance, status="proposed",
                 ))
+            # A pair swap is the strongest dispatch edge: both wishes satisfied,
+            # no payment, one local leg each → lowest net carbon (§21.4). Score it
+            # on the same utility scale (mutual match, lifted for the zero-payment
+            # circular win) and label why.
+            dispatch_score = round(min(1.0, 0.5 * score + 0.5), 4)
+            reasons = [
+                DispatchReason(code="zero_payment_swap", label="Zero-payment swap"),
+                DispatchReason(code="high_carbon_save", label="Lowest carbon — local swap"),
+            ]
+            if distance is not None and distance <= settings.rescue_default_radius_km * 2:
+                reasons.append(DispatchReason(code="best_local_fit", label="Both nearby"))
             out.append(PairMatch(
                 unit_a=str(unit_a.id), unit_b=str(unit_b.id), user_a=str(a), user_b=str(b),
                 score=score, distance_km=round(distance, 2) if distance is not None else None,
+                dispatch_score=dispatch_score, dispatch_reasons=reasons[:3],
             ))
 
     if persist:
         db.commit()
-    out.sort(key=lambda p: p.score, reverse=True)
+    # Best dispatch utility first (mutual-match swaps), score as the tiebreak.
+    out.sort(key=lambda p: (p.dispatch_score or 0.0, p.score), reverse=True)
     return out

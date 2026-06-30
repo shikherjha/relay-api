@@ -6,14 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.clients.engine_client import EngineClient
 from app.core.config import settings
-from app.core.deps import current_user_id
+from app.core.deps import current_user_id, engine_client
 from app.core.geo import haversine_km
 from app.core.ids import to_uuid
 from app.db.session import get_db
 from app.models import entities as m
 from app.schemas.rescue import PairMatch, RescueClaimResult, RescueListing
 from app.schemas.resale import PriceRange
+from app.services import dispatch as dispatch_service
 from app.services.pair_rescue import find_pairs
 from app.services.rescue import (
     claim_guardrails,
@@ -135,12 +137,19 @@ def rescue_feed(
     scope: str = Query(default="local", pattern="^(local|national|all)$"),
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
+    engine: EngineClient = Depends(engine_client),
 ) -> list[RescueListing]:
     # Pillar 5 (tiered): green credits buy early access. The caller's lifetime
     # credit tier grants a "lead" — how early before a listing goes public it can
     # be seen. Gold sees from creation, silver later, standard only when public.
     viewer = to_uuid(user_id)
-    lead = user_lead_seconds(lifetime_credits(db, viewer))
+    viewer_user = db.get(m.User, viewer)
+    base_lead = user_lead_seconds(lifetime_credits(db, viewer))
+    # §21.4 hybrid: the viewer's own open wishes drive both the per-line dispatch
+    # match score AND a capped early-access lead — a strong-wish, in-radius buyer
+    # sees a great-fit drop a little earlier (best-matched first, not just
+    # highest-credit). Credit tiers still apply underneath.
+    v_wishes = dispatch_service.open_wishes(db, viewer)
 
     # A user always sees listings for items THEY returned — the early-access
     # embargo gives high-tier users a head-start on *others'* drops, it must never
@@ -150,21 +159,31 @@ def rescue_feed(
             select(m.ReturnEvent.unit_id).where(m.ReturnEvent.user_id == viewer)
         ).scalars().all()
     )
+    my_returned_str = {str(u) for u in my_returned_units}
 
     rows = db.execute(
         select(m.RescueListing).where(m.RescueListing.status == "active")
     ).scalars().all()
 
     out: list[RescueListing] = []
+    scored: list[dispatch_service.ScoredRow] = []
     for row in rows:
         row_scope = row.scope or "local"
         if scope != "all" and row_scope != scope:
             continue
+        unit = db.get(m.ProductUnit, row.unit_id)
+        product = db.get(m.Product, unit.product_id) if unit is not None else None
+        category = product.category if product is not None else None
+
+        vmatch, best_w = 0.0, None
+        if v_wishes and unit is not None and row_scope == "local":
+            vmatch, best_w = dispatch_service.unit_wish_match(unit, category, v_wishes)
+
         owned = row.unit_id in my_returned_units
-        if not owned and not visible_to(row, lead):
+        eff_lead = base_lead + dispatch_service.match_lead_bonus(vmatch)
+        if not owned and not visible_to(row, eff_lead):
             continue  # still embargoed for this tier (but never for the returner)
         embargoed = is_embargoed(row)
-        unit = db.get(m.ProductUnit, row.unit_id)
         distance = None
         if row_scope == "local":
             # Hyperlocal intercept is distance-gated; national (Path B) ships.
@@ -172,20 +191,37 @@ def rescue_feed(
                 distance = haversine_km(lat, lng, unit.geo_lat, unit.geo_lng)
                 if distance > radius_km and not owned:
                     continue
-        out.append(_to_listing(db, row, unit, distance, early_access=embargoed))
-    # Most-recently-returned first across all scopes — a just-returned unit (e.g.
-    # the MacBook) lands on top whether it's a local pickup or a national relist.
-    # `returned_at` is the true return time; listings with no return context sort
-    # last (epoch).
+        listing = _to_listing(db, row, unit, distance, early_access=embargoed)
+        out.append(listing)
+        scored.append((listing, row, unit, product, vmatch, best_w))
+
+    # Rescue Dispatch Score (§21.4): rank each (unit × this viewer) edge by
+    # business utility and attach the "why you're seeing this" reasons.
+    scores = dispatch_service.score_feed(
+        db, viewer_user, scored, radius_km=radius_km, engine=engine
+    )
+    for listing in out:
+        sc = scores.get(listing.id)
+        if sc is not None:
+            listing.dispatch_score = sc.dispatch_score
+            listing.dispatch_reasons = sc.dispatch_reasons
+
+    # Sort: the viewer's own just-returned unit stays pinned on top, then highest
+    # dispatch score (best local fit / wish match / urgency / carbon), then
+    # most-recently-returned as a deterministic tiebreak.
     _epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-    def _returned_key(r: RescueListing) -> float:
+    def _returned_ts(r: RescueListing) -> float:
         ra = r.returned_at
         if ra is None:
             return _epoch.timestamp()
         return (ra if ra.tzinfo is not None else ra.replace(tzinfo=timezone.utc)).timestamp()
 
-    out.sort(key=_returned_key, reverse=True)
+    def _sort_key(r: RescueListing) -> tuple[int, float, float]:
+        owned = 1 if r.unit_id in my_returned_str else 0
+        return (owned, r.dispatch_score if r.dispatch_score is not None else 0.0, _returned_ts(r))
+
+    out.sort(key=_sort_key, reverse=True)
     return out
 
 

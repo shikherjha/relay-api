@@ -188,12 +188,15 @@ _RETURN_HISTORY = [
     ("c2", ["too_small"]),
     ("c3", ["fit"]),
     ("c5", ["defective"]),
-    ("c6", ["not_as_described"]),
+    # Electronics SKUs carry ≥2 returns of one dominant reason so they cross the
+    # seller-signal flag threshold — this powers the electronics "what people
+    # actually returned this for" preempt on the PDP (a flagged SKU, not n=1 noise).
+    ("c6", ["not_as_described", "not_as_described"]),
     ("c8", ["fit"]),
-    ("c9", ["too_small"]),
+    ("c9", ["too_small", "too_small"]),
     ("ca", ["too_large"]),
-    ("b3", ["defective"]),
-    ("c4", ["not_as_described"]),
+    ("b3", ["defective", "defective"]),
+    ("c4", ["not_as_described", "not_as_described"]),
 ]
 
 # Seller refurbished inventory: sold → returned → refurbished, owner back to the
@@ -392,16 +395,27 @@ def seed_all(db: Session) -> dict:
 
     # Rescue listings — mix of public (older) and embargoed (fresh, early-access only).
     embargoed = 0
+    rescue_by_suffix: dict[str, m.RescueListing] = {}
     for usuf, base, ttl_hours, age_min in _RESCUES:
         ttl = ttl_hours * 3600
         created = now - timedelta(minutes=age_min)
         if age_min < 10:
             embargoed += 1
-        db.add(m.RescueListing(
+        rl = m.RescueListing(
             unit_id=units[usuf].id, base_discount_pct=base, current_discount_pct=base,
             ttl_seconds=ttl, expires_at=now + timedelta(seconds=ttl), status="active",
             created_at=created,
-        ))
+        )
+        db.add(rl)
+        rescue_by_suffix[usuf] = rl
+
+    # Rescue Dispatch Score demo (§21.4): the jacket rescue (c1) matches the
+    # BUYER's "jacket L" wish (size L, grade A, ~3 km away). Make it genuinely
+    # NEAR-EXPIRY so its card reads "Matches your wish · Best local fit · Clearing
+    # soon" — the crisp dispatch example, and a deterministic smoke target.
+    DISPATCH_DEMO_UNIT_ID = str(units["c1"].id)
+    if "c1" in rescue_by_suffix:
+        rescue_by_suffix["c1"].expires_at = now + timedelta(minutes=40)  # ~40m of a 6h clock
 
     db.add_all([
         m.WarrantyRecord(unit_id=U_HEADPHONES, months_remaining=18, repair_events=[]),
@@ -956,6 +970,7 @@ def seed_all(db: Session) -> dict:
         "exchanges": exchanges,
         "size_return_unit": SIZE_RETURN_UNIT_ID,
         "exchange_unit": EXCHANGE_UNIT_ID,
+        "dispatch_demo_unit": DISPATCH_DEMO_UNIT_ID,
         "gate_mismatch_unit": str(_id("d7")),
         "return_events": (sum(len(r) for _, r in _RETURN_HISTORY) + 3
                           + seller_refurb_units + wrong_item_flagged + exchanges),
